@@ -23,13 +23,15 @@ ARG BEANCOUNT_VERSION
 ENV PATH "/app/bin:$PATH"
 RUN python3 -mvenv /app
 
-WORKDIR /tmp/build
-RUN git clone https://github.com/beancount/beancount
+#WORKDIR /tmp/build
+#RUN git clone https://github.com/beancount/beancount
+#
+#WORKDIR /tmp/build/beancount
+#RUN git checkout ${BEANCOUNT_VERSION}
 
-WORKDIR /tmp/build/beancount
-RUN git checkout ${BEANCOUNT_VERSION}
+# RUN CFLAGS=-s pip3 install -U /tmp/build/beancount
 
-RUN CFLAGS=-s pip3 install -U --use-pep517 /tmp/build/beancount
+RUN pip3 install beancount
 
 RUN pip3 uninstall -y pip
 
