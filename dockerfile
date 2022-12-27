@@ -29,7 +29,7 @@ RUN git clone https://github.com/beancount/beancount
 WORKDIR /tmp/build/beancount
 RUN git checkout ${BEANCOUNT_VERSION}
 
-RUN CFLAGS=-s pip3 install -U /tmp/build/beancount
+RUN CFLAGS=-s pip3 install -U --use-pep517 /tmp/build/beancount
 
 RUN pip3 uninstall -y pip
 
