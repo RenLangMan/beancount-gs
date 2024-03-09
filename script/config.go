@@ -47,6 +47,7 @@ type Account struct {
 	MarketCurrencySymbol string            `json:"marketCurrencySymbol,omitempty"`
 	EndDate              string            `json:"endDate,omitempty"`
 	Type                 *AccountType      `json:"type,omitempty"`
+	Status               bool              `json:"status,omitempty"`
 }
 
 type AccountPosition struct {
@@ -319,10 +320,11 @@ func LoadLedgerAccounts(ledgerId string) error {
 					continue
 				} else {
 					words := strings.Fields(line)
+					var strDate string
 					if len(words) >= 3 {
 						key := words[2]
 						temp = accountMap[key]
-						account := Account{Acc: key, Type: nil}
+						account := Account{Acc: key, Type: nil, StartDate: "", Currency: "", EndDate: ""}
 						// 货币单位
 						if len(words) >= 4 {
 							account.Currency = words[3]
@@ -330,52 +332,26 @@ func LoadLedgerAccounts(ledgerId string) error {
 						if words[1] == "open" {
 							account.StartDate = words[0]
 							if account.StartDate != "" && temp.StartDate != "" {
-								layout := "2006-01-02"
-								//account开始日期 转为时间戳t1
-								t1, err := time.Parse(layout, account.StartDate)
-								if err != nil {
-									return err
-								}
-								//temp开始日期 转为时间戳t2
-								t2, err := time.Parse(layout, temp.StartDate)
-								if err != nil {
-									return err
-								}
-								if t1.Unix() <= t2.Unix() {
-									continue
-								} else {
-									// 重复定义的账户，账户开启时间取最早的开始时间为准
-									account.StartDate = temp.StartDate
-								}
+								// 账户开启时间取最晚开户时间
+								strDate = MaxTimestamp(getTimeStamp(account.StartDate), getTimeStamp(temp.StartDate))
+								account.StartDate = strDate
 							}
-
 						} else if words[1] == "close" {
 							account.EndDate = words[0]
 							if account.EndDate != "" && temp.EndDate != "" {
-								layout := "2006-01-02"
-								//account结束日期 转为时间戳t1
-								t1, err := time.Parse(layout, account.EndDate)
-								if err != nil {
-									return err
-								}
-								//temp结束日期 转为时间戳t2
-								t2, err := time.Parse(layout, temp.EndDate)
-								if err != nil {
-									return err
-								}
-								if t1.Unix() <= t2.Unix() {
-									// 重复定义的账户，关闭账户时间取最晚的结束时间为准
-									account.EndDate = temp.EndDate
-								} else {
-									continue
-								}
+								// 账户关闭时间取最晚关闭时间
+								strDate = MaxTimestamp(getTimeStamp(account.EndDate), getTimeStamp(temp.EndDate))
+								account.EndDate = strDate
+								LogInfo("重复定义的账户，关闭账户时间取最晚的结束时间为准，account %s is redefined", key)
+								LogInfo("account start date is %s", account.StartDate)
+								LogInfo("account  end date is %s", account.EndDate)
 							}
 						}
 
-						if account.StartDate == "" {
+						if account.StartDate == "" && temp.StartDate != "" {
 							account.StartDate = temp.StartDate
 						}
-						if account.EndDate == "" {
+						if account.EndDate == "" && temp.EndDate != "" {
 							account.EndDate = temp.EndDate
 						}
 						if account.Currency == "" {
@@ -384,21 +360,27 @@ func LoadLedgerAccounts(ledgerId string) error {
 
 						// 如果结束时间小于开始时间，则结束时间为空
 						if account.EndDate != "" {
-							t1, err := time.Parse("2006-01-02", account.EndDate)
-							if err != nil {
-								return err
-							}
-							t2, err := time.Parse("2006-01-02", account.StartDate)
-							if err != nil {
-								return err
-							}
-							if t1.Unix() < t2.Unix() {
+							if getTimeStamp(account.EndDate) < getTimeStamp(account.StartDate) {
 								account.EndDate = ""
-							} else {
-								continue
+								LogInfo("结束时间小于开始时间，则结束时间为空，account %s is redefined", key)
+								LogInfo("account start date is %s", account.StartDate)
+								LogInfo("account  end date is %s", account.EndDate)
 							}
+
 						}
-						accountMap[key] = account
+						if account.EndDate != "" {
+							if getTimeStamp(account.EndDate) < getTimeStamp(time.Now().Format("2006-01-02 12:34:55")) {
+								// 最后一次close账户后至今仍然关闭状态，账号为停用
+								account.Status = false
+							}
+							accountMap[key] = account
+
+						} else {
+							// 将截至当前时间有效账户加入map
+							account.Status = true
+							accountMap[key] = account
+						}
+
 					}
 				}
 			}
