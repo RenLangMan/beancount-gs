@@ -313,46 +313,93 @@ func LoadLedgerAccounts(ledgerId string) error {
 		lines := strings.Split(string(bytes), "\n")
 		var temp Account
 		for _, line := range lines {
+			line = strings.TrimSpace(line)
 			if line != "" {
-				words := strings.Fields(line)
-				if len(words) >= 3 {
-					key := words[2]
-					temp = accountMap[key]
-					account := Account{Acc: key, Type: nil}
-
-					if words[1] == "open" {
-						account.StartDate = words[0]
-						if account.StartDate != "" && temp.StartDate != "" && account.StartDate >= temp.StartDate {
-							// 重复定义的账户，取最早的开始时间为准
-							continue
-						}
+				if line[0] == ';' {
+					continue
+				} else {
+					words := strings.Fields(line)
+					if len(words) >= 3 {
+						key := words[2]
+						temp = accountMap[key]
+						account := Account{Acc: key, Type: nil}
 						// 货币单位
 						if len(words) >= 4 {
 							account.Currency = words[3]
 						}
-					} else if words[1] == "close" {
-						account.EndDate = words[0]
-						if account.EndDate != "" && temp.EndDate != "" && account.EndDate < temp.EndDate {
-							// 重复定义的账户，取最晚的开始时间为准
-							continue
+						if words[1] == "open" {
+							account.StartDate = words[0]
+							if account.StartDate != "" && temp.StartDate != "" {
+								layout := "2006-01-02"
+								//account开始日期 转为时间戳t1
+								t1, err := time.Parse(layout, account.StartDate)
+								if err != nil {
+									return err
+								}
+								//temp开始日期 转为时间戳t2
+								t2, err := time.Parse(layout, temp.StartDate)
+								if err != nil {
+									return err
+								}
+								if t1.Unix() <= t2.Unix() {
+									continue
+								} else {
+									// 重复定义的账户，账户开启时间取最早的开始时间为准
+									account.StartDate = temp.StartDate
+								}
+							}
+
+						} else if words[1] == "close" {
+							account.EndDate = words[0]
+							if account.EndDate != "" && temp.EndDate != "" {
+								layout := "2006-01-02"
+								//account结束日期 转为时间戳t1
+								t1, err := time.Parse(layout, account.EndDate)
+								if err != nil {
+									return err
+								}
+								//temp结束日期 转为时间戳t2
+								t2, err := time.Parse(layout, temp.EndDate)
+								if err != nil {
+									return err
+								}
+								if t1.Unix() <= t2.Unix() {
+									// 重复定义的账户，关闭账户时间取最晚的结束时间为准
+									account.EndDate = temp.EndDate
+								} else {
+									continue
+								}
+							}
 						}
-					}
 
-					if account.StartDate == "" {
-						account.StartDate = temp.StartDate
-					}
-					if account.EndDate == "" {
-						account.EndDate = temp.EndDate
-					}
-					if account.Currency == "" {
-						account.Currency = temp.Currency
-					}
+						if account.StartDate == "" {
+							account.StartDate = temp.StartDate
+						}
+						if account.EndDate == "" {
+							account.EndDate = temp.EndDate
+						}
+						if account.Currency == "" {
+							account.Currency = temp.Currency
+						}
 
-					// 如果结束时间小于开始时间，则结束时间为空
-					if account.EndDate != "" && account.StartDate > account.EndDate {
-						account.EndDate = ""
+						// 如果结束时间小于开始时间，则结束时间为空
+						if account.EndDate != "" {
+							t1, err := time.Parse("2006-01-02", account.EndDate)
+							if err != nil {
+								return err
+							}
+							t2, err := time.Parse("2006-01-02", account.StartDate)
+							if err != nil {
+								return err
+							}
+							if t1.Unix() < t2.Unix() {
+								account.EndDate = ""
+							} else {
+								continue
+							}
+						}
+						accountMap[key] = account
 					}
-					accountMap[key] = account
 				}
 			}
 		}

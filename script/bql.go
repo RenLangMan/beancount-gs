@@ -32,6 +32,7 @@ func GetQueryParams(c *gin.Context) QueryParams {
 	var queryParams QueryParams
 	var hasWhere bool
 	if c.Query("year") != "" {
+		LogInfo("year", c.Query("year"))
 		val, err := strconv.Atoi(c.Query("year"))
 		if err == nil {
 			queryParams.Year = val
@@ -39,6 +40,7 @@ func GetQueryParams(c *gin.Context) QueryParams {
 		}
 	}
 	if c.Query("month") != "" {
+		LogInfo("month", c.Query("month"))
 		val, err := strconv.Atoi(c.Query("month"))
 		if err == nil {
 			queryParams.Month = val
@@ -46,20 +48,24 @@ func GetQueryParams(c *gin.Context) QueryParams {
 		}
 	}
 	if c.Query("tag") != "" {
+		LogInfo("tag", c.Query("tag"))
 		queryParams.Tag = c.Query("tag")
 		hasWhere = true
 	}
 	if c.Query("type") != "" {
+		LogInfo("type", c.Query("type"))
 		queryParams.AccountLike = c.Query("type")
 		hasWhere = true
 	}
 	if c.Query("account") != "" {
+		LogInfo("account", c.Query("account"))
 		queryParams.Account = c.Query("account")
 		queryParams.Limit = 100
 		hasWhere = true
 	}
 	queryParams.Where = hasWhere
 	if c.Query("path") != "" {
+		LogInfo("path", c.Query("path"))
 		queryParams.Path = c.Query("path")
 	}
 	return queryParams
