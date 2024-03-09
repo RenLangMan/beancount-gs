@@ -342,9 +342,6 @@ func LoadLedgerAccounts(ledgerId string) error {
 								// 账户关闭时间取最晚关闭时间
 								strDate = MaxTimestamp(getTimeStamp(account.EndDate), getTimeStamp(temp.EndDate))
 								account.EndDate = strDate
-								LogInfo("重复定义的账户，关闭账户时间取最晚的结束时间为准，account %s is redefined", key)
-								LogInfo("account start date is %s", account.StartDate)
-								LogInfo("account  end date is %s", account.EndDate)
 							}
 						}
 
@@ -362,9 +359,6 @@ func LoadLedgerAccounts(ledgerId string) error {
 						if account.EndDate != "" {
 							if getTimeStamp(account.EndDate) < getTimeStamp(account.StartDate) {
 								account.EndDate = ""
-								LogInfo("结束时间小于开始时间，则结束时间为空，account %s is redefined", key)
-								LogInfo("account start date is %s", account.StartDate)
-								LogInfo("account  end date is %s", account.EndDate)
 							}
 
 						}
@@ -374,13 +368,11 @@ func LoadLedgerAccounts(ledgerId string) error {
 								account.Status = false
 							}
 							accountMap[key] = account
-
 						} else {
 							// 将截至当前时间有效账户加入map
 							account.Status = true
 							accountMap[key] = account
 						}
-
 					}
 				}
 			}
