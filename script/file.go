@@ -9,6 +9,7 @@ import (
 )
 
 func FileIfExist(filePath string) bool {
+	// 判定指定路径文件是否存在
 	_, err := os.Stat(filePath)
 	if nil != err {
 		return false
@@ -20,6 +21,7 @@ func FileIfExist(filePath string) bool {
 }
 
 func ReadFile(filePath string) ([]byte, error) {
+	//读取指定路径文件
 	content, err := ioutil.ReadFile(filePath)
 	if nil != err {
 		LogSystemError("Failed to read file (" + filePath + ")")

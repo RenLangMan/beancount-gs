@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"encoding/csv"
 	"errors"
-	"github.com/beancount-gs/script"
-	"github.com/gin-gonic/gin"
-	"golang.org/x/text/encoding/simplifiedchinese"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beancount-gs/script"
+	"github.com/gin-gonic/gin"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func ImportAliPayCSV(c *gin.Context) {
@@ -87,10 +88,13 @@ func importBrowserAliPayCSV(lines []string, currency string, currencySymbol stri
 	return Transaction{}, errors.New("parse error")
 }
 
+//------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+//交易时间  ， 交易分类  ， 交易对方  ， 对方账号  ， 商品说明  ， 收/支  ， 金额  ， 收/付款方式  ， 交易状态  ， 交易订单号  ， 商家订单号  ， 备注
+//0，          1，          2，          3，          4，          5，    6，          7，          8，          9，          10，        11
 func importMobileAliPayCSV(lines []string, currency string, currencySymbol string) (Transaction, error) {
-	dateColumn := strings.Fields(lines[0])
-	status := strings.Trim(lines[5], " ")
-	account := ""
+	dateColumn := strings.Fields(lines[0]) //交易日期时间
+	status := strings.Trim(lines[5], " ")  //收支状态
+	account := ""                          //初始账号为空
 	if status == "" {
 		account = ""
 	} else if status == "支出" {
@@ -101,14 +105,14 @@ func importMobileAliPayCSV(lines []string, currency string, currencySymbol strin
 
 	if len(dateColumn) >= 2 {
 		return Transaction{
-			Id:             strings.Trim(lines[9], " "),
-			Date:           strings.Trim(dateColumn[0], " "),
-			Payee:          strings.Trim(lines[2], " "),
-			Narration:      strings.Trim(lines[4], " "),
-			Number:         strings.Trim(lines[6], " "),
-			Account:        account,
-			Currency:       currency,
-			CurrencySymbol: currencySymbol,
+			Id:             strings.Trim(lines[9], " "),      //支付宝交易订单号
+			Date:           strings.Trim(dateColumn[0], " "), //只要交易日期，不要精确时间
+			Payee:          strings.Trim(lines[2], " "),      //交易对方
+			Narration:      strings.Trim(lines[4], " "),      //交易摘要-商品说明
+			Number:         strings.Trim(lines[6], " "),      //交易金额
+			Account:        account,                          //交易账户
+			Currency:       currency,                         //当前币种
+			CurrencySymbol: currencySymbol,                   //币种符号
 		}, nil
 	}
 	return Transaction{}, errors.New("parse error")

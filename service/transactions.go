@@ -164,6 +164,8 @@ func saveTransaction(c *gin.Context, addTransactionForm AddTransactionForm, ledg
 		}
 	}
 
+	// todo 添加meta 时间戳等支付宝账单信息
+
 	currencyMap := script.GetLedgerCurrencyMap(ledgerConfig.Id)
 
 	var autoBalance bool
