@@ -1,0 +1,49 @@
+{
+    "folders": [
+        {
+            "path": "."
+        }
+    ],
+    "settings": {
+        //"python.defaultInterpreterPath": "C:/Python38/envs/bean235_py38_env/Scripts/python.exe",
+        //"python.defaultInterpreterPath": "C:/Program Files (x86)/Microsoft Visual Studio/Shared/Python310_64/venvs/env_beanBook/Scripts/python.exe"
+        //"python.defaultInterpreterPath": "C:/Python310_64/venvs/env_beanBook/Scripts/python.exe"
+        //"python.defaultInterpreterPath": "C:\\Python310_64\\venvs\\env_beanBook\\Scripts\\python.exe"
+        //"python.defaultInterpreterPath": "F:/Users/wyf/source/repos/Bean/env/Scripts/python.exe",
+        "[python]": {
+            "editor.defaultFormatter": "ms-python.black-formatter"
+        },
+        // "python.formatting.provider": "none"
+    },
+    "launch": {
+        // 使用 IntelliSense 了解相关属性。 
+        // 悬停以查看现有属性的描述。
+        // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "name": "Python: 远程调试",
+                "type": "debugpy",
+                "request": "attach",
+                "listen": {
+                    "host": "0.0.0.0",
+                    "port": 5678
+                },
+                "pathMappings": [
+                    {
+                        "localRoot": "${workspaceFolder}",
+                        "remoteRoot": "."
+                    }
+                ]
+            },
+            {
+                "name": "Python: 当前文件",
+                "type": "debugpy",
+                "request": "launch",
+                "program": "${file}",
+                "console": "integratedTerminal",
+                "justMyCode": true
+            }
+        ]
+    }
+}
