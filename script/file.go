@@ -2,9 +2,11 @@ package script
 
 import (
 	"bufio"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -208,4 +210,155 @@ func MkDir(dirPath string) error {
 	}
 	LogSystemInfo("Success mkdir " + dirPath)
 	return nil
+}
+
+// FindConsecutiveMultilineTextInFile 查找文件中连续多行文本片段的开始和结束行号
+func FindConsecutiveMultilineTextInFile(filePath string, multilineLines []string) (startLine, endLine int, err error) {
+	for i := range multilineLines {
+		multilineLines[i] = CleanString(multilineLines[i])
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return -1, -1, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	startLine = -1
+	endLine = -1
+	lineNumber := 0
+	matchIndex := 0
+
+	for scanner.Scan() {
+		lineNumber++
+		// 清理文件中的当前行
+		lineText := CleanString(scanner.Text())
+
+		// 检查当前行是否匹配多行文本片段的当前行
+		if lineText == multilineLines[matchIndex] {
+			if startLine == -1 {
+				startLine = lineNumber // 记录起始行号
+			}
+			matchIndex++
+			// 如果所有行都匹配完成，记录结束行号并退出循环
+			if matchIndex == len(multilineLines) {
+				endLine = lineNumber
+				break
+			}
+		} else {
+			// 如果匹配失败，重置匹配索引和起始行号
+			matchIndex = 0
+			startLine = -1
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return -1, -1, err
+	}
+
+	// 如果未找到完整的多行文本片段，则返回 -1
+	if startLine == -1 || endLine == -1 {
+		return -1, -1, fmt.Errorf("未找到连续的多行文本片段")
+	}
+
+	LogSystemInfo("Success find content in file " + filePath + " line range:  " + string(rune(startLine)) + "," + string(rune(endLine)))
+	return startLine, endLine, nil
+}
+
+// CleanString 去除字符串中的首尾空白和中间的所有空格字符
+func CleanString(str string) string {
+	if IsComment(str) {
+		return ""
+	}
+	result := getAccountWithNumber(str)
+	// 去除 " ", ";", "\r"
+	result = strings.ReplaceAll(result, ",", "")
+	result = strings.ReplaceAll(result, " ", "")
+	// 过滤空白的商户信息 ““
+	result = strings.ReplaceAll(result, "\"\"", "")
+	result = strings.ReplaceAll(result, ";", "")
+	result = strings.ReplaceAll(result, "\r", "")
+	// 清楚汇率转换
+
+	return result
+}
+
+// 正则提取：
+// Assets:Flow:Cash:现金 -20.00 USD {xxx CNY, 2025-01-01} -> Assets:Flow:Cash:现金 -20.00 USD
+func getAccountWithNumber(str string) string {
+	// 定义正则表达式模式
+	pattern := `^[^\{]+`
+	// 编译正则表达式
+	re := regexp.MustCompile(pattern)
+	// 使用正则提取匹配的部分
+	return re.FindString(str)
+}
+
+func IsComment(line string) bool {
+	trimmed := strings.TrimLeft(line, " ")
+	if strings.HasPrefix(trimmed, ";") {
+		return true
+	}
+	return false
+}
+
+// 删除指定行范围的内容
+func RemoveLines(filePath string, startLineNo, endLineNo int) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// 读取文件的每一行
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	// 检查行号的有效性
+	if startLineNo < 1 || endLineNo > len(lines) || startLineNo > endLineNo {
+		return nil, fmt.Errorf("行号范围无效")
+	}
+
+	// 删除从 startLineNo 到 endLineNo 的行（下标从 0 开始）
+	modifiedLines := append(lines[:startLineNo-1], lines[endLineNo:]...)
+	return modifiedLines, nil
+}
+
+// 在指定行号插入多行文本
+func InsertLines(lines []string, startLineNo int, newLines []string) ([]string, error) {
+	// 检查插入位置的有效性
+	if startLineNo < 1 || startLineNo > len(lines)+1 {
+		return nil, fmt.Errorf("插入行号无效")
+	}
+	// 在指定位置插入新的内容
+	modifiedLines := append(lines[:startLineNo-1], append(newLines, lines[startLineNo-1:]...)...)
+	return modifiedLines, nil
+}
+
+// 写回文件
+func WriteToFile(filePath string, lines []string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// 将修改后的内容写回文件
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		_, err := writer.WriteString(line + "\n")
+		if err != nil {
+			return err
+		}
+	}
+	LogSystemInfo("Success write content in file " + filePath)
+	return writer.Flush()
 }

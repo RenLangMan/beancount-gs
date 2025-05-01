@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,7 +64,7 @@ func StatsTotal(c *gin.Context) {
 }
 
 type StatsQuery struct {
-	Prefix string `form:"prefix" binding:"required"`
+	Prefix string `form:"prefix"`
 	Year   int    `form:"year"`
 	Month  int    `form:"month"`
 	Level  int    `form:"level"`
@@ -76,9 +77,9 @@ type AccountPercentQueryResult struct {
 }
 
 type AccountPercentResult struct {
-	Account           string      `json:"account"`
-	Amount            json.Number `json:"amount"`
-	OperatingCurrency string      `json:"operatingCurrency"`
+	Account           string          `json:"account"`
+	Amount            decimal.Decimal `json:"amount"`
+	OperatingCurrency string          `json:"operatingCurrency"`
 }
 
 func StatsAccountPercent(c *gin.Context) {
@@ -95,13 +96,8 @@ func StatsAccountPercent(c *gin.Context) {
 		Month:       statsQuery.Month,
 		Where:       true,
 	}
-	var bql string
-	if statsQuery.Level != 0 {
-		prefixNodeLen := len(strings.Split(strings.Trim(statsQuery.Prefix, ":"), ":"))
-		bql = fmt.Sprintf("SELECT '\\', root(account, %d) as subAccount, '\\', sum(convert(value(position), '%s')), '\\'", statsQuery.Level+prefixNodeLen, ledgerConfig.OperatingCurrency)
-	} else {
-		bql = fmt.Sprintf("SELECT '\\', account, '\\', sum(convert(value(position), '%s')), '\\'", ledgerConfig.OperatingCurrency)
-	}
+
+	bql := fmt.Sprintf("SELECT '\\', account, '\\', sum(convert(value(position), '%s')), '\\'", ledgerConfig.OperatingCurrency)
 
 	statsQueryResultList := make([]AccountPercentQueryResult, 0)
 	err := script.BQLQueryListByCustomSelect(ledgerConfig, bql, &queryParams, &statsQueryResultList)
@@ -114,10 +110,38 @@ func StatsAccountPercent(c *gin.Context) {
 	for _, queryRes := range statsQueryResultList {
 		if queryRes.Position != "" {
 			fields := strings.Fields(queryRes.Position)
-			result = append(result, AccountPercentResult{Account: queryRes.Account, Amount: json.Number(fields[0]), OperatingCurrency: fields[1]})
+			account := queryRes.Account
+			if statsQuery.Level == 1 {
+				accountType := script.GetAccountType(ledgerConfig.Id, queryRes.Account)
+				account = accountType.Key + ":" + accountType.Name
+			}
+			amount, err := decimal.NewFromString(fields[0])
+			if err == nil {
+				result = append(result, AccountPercentResult{Account: account, Amount: amount, OperatingCurrency: fields[1]})
+			}
 		}
 	}
-	OK(c, result)
+
+	OK(c, aggregateAccountPercentList(result))
+}
+
+func aggregateAccountPercentList(result []AccountPercentResult) []AccountPercentResult {
+	// 创建一个映射来存储连接
+	nodeMap := make(map[string]AccountPercentResult)
+	for _, account := range result {
+		acc := account.Account
+		if exist, found := nodeMap[acc]; found {
+			exist.Amount = exist.Amount.Add(account.Amount)
+			nodeMap[acc] = exist
+		} else {
+			nodeMap[acc] = account
+		}
+	}
+	aggregateResult := make([]AccountPercentResult, 0)
+	for _, value := range nodeMap {
+		aggregateResult = append(aggregateResult, value)
+	}
+	return aggregateResult
 }
 
 type AccountTrendResult struct {
@@ -239,6 +263,405 @@ func StatsAccountBalance(c *gin.Context) {
 		}
 	}
 	OK(c, resultList)
+}
+
+type AccountSankeyResult struct {
+	Nodes []AccountSankeyNode `json:"nodes"`
+	Links []AccountSankeyLink `json:"links"`
+}
+
+type AccountSankeyNode struct {
+	Name string `json:"name"`
+}
+type AccountSankeyLink struct {
+	Source int             `json:"source"`
+	Target int             `json:"target"`
+	Value  decimal.Decimal `json:"value"`
+}
+
+func NewAccountSankeyLink() *AccountSankeyLink {
+	return &AccountSankeyLink{
+		Source: -1,
+		Target: -1,
+	}
+}
+
+type TransactionAccountPositionBQLResult struct {
+	Id       string
+	Account  string
+	Position string
+}
+
+type TransactionAccountPosition struct {
+	Id                string
+	Account           string
+	AccountName       string
+	Value             decimal.Decimal
+	OperatingCurrency string
+}
+
+// StatsAccountSankey 统计账户流向
+func StatsAccountSankey(c *gin.Context) {
+	ledgerConfig := script.GetLedgerConfigFromContext(c)
+	var statsQuery StatsQuery
+	if err := c.ShouldBindQuery(&statsQuery); err != nil {
+		BadRequest(c, err.Error())
+		return
+	}
+	queryParams := script.QueryParams{
+		AccountLike: statsQuery.Prefix,
+		Year:        statsQuery.Year,
+		Month:       statsQuery.Month,
+		Where:       true,
+	}
+	statsQueryResultList := make([]TransactionAccountPositionBQLResult, 0)
+	var bql string
+	// 账户不为空，则查询时间范围内所有涉及该账户的交易记录
+	if statsQuery.Prefix != "" {
+		bql = "SELECT '\\', id, '\\'"
+		err := script.BQLQueryListByCustomSelect(ledgerConfig, bql, &queryParams, &statsQueryResultList)
+		if err != nil {
+			InternalError(c, err.Error())
+			return
+		}
+		// 清空 account 查询条件，改为使用 ID 查询包含该账户所有交易记录
+		queryParams.AccountLike = ""
+		queryParams.IDList = "|"
+		if len(statsQueryResultList) != 0 {
+			idSet := make(map[string]bool)
+			for _, bqlResult := range statsQueryResultList {
+				idSet[bqlResult.Id] = true
+			}
+			idList := make([]string, 0, len(idSet))
+			for id := range idSet {
+				idList = append(idList, id)
+			}
+			queryParams.IDList = strings.Join(idList, "|")
+		}
+	}
+	// 查询全部account的交易数据
+	bql = fmt.Sprintf("SELECT '\\', id, '\\', account, '\\', sum(convert(value(position), '%s')), '\\'", ledgerConfig.OperatingCurrency)
+
+	statsQueryResultList = make([]TransactionAccountPositionBQLResult, 0)
+	err := script.BQLQueryListByCustomSelect(ledgerConfig, bql, &queryParams, &statsQueryResultList)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	result := make([]Transaction, 0)
+	for _, queryRes := range statsQueryResultList {
+		if queryRes.Position != "" {
+			fields := strings.Fields(queryRes.Position)
+			account := queryRes.Account
+			if statsQuery.Level == 1 {
+				accountType := script.GetAccountType(ledgerConfig.Id, account)
+				account = accountType.Key + ":" + accountType.Name
+			}
+			result = append(result, Transaction{
+				Id:       queryRes.Id,
+				Account:  account,
+				Number:   fields[0],
+				Currency: fields[1],
+			})
+		}
+	}
+
+	OK(c, buildSankeyResult(result))
+}
+
+func buildSankeyResult(transactions []Transaction) AccountSankeyResult {
+	accountSankeyResult := AccountSankeyResult{}
+	accountSankeyResult.Nodes = make([]AccountSankeyNode, 0)
+	accountSankeyResult.Links = make([]AccountSankeyLink, 0)
+	// 构建 nodes 和 links
+	var nodes []AccountSankeyNode
+
+	// 遍历 transactions 中按id进行分组
+	if len(transactions) > 0 {
+		for _, transaction := range transactions {
+			// 如果nodes中不存在该节点，则添加
+			account := transaction.Account
+			if !contains(nodes, account) {
+				nodes = append(nodes, AccountSankeyNode{Name: account})
+			}
+		}
+		accountSankeyResult.Nodes = nodes
+
+		transactionsMap := groupTransactionsByID(transactions)
+		// 声明 links
+		links := make([]AccountSankeyLink, 0)
+		// 遍历 transactionsMap
+		for _, transactions := range transactionsMap {
+			// 拼接成 links
+			sourceTransaction := Transaction{}
+			targetTransaction := Transaction{}
+			currentLinkNode := NewAccountSankeyLink()
+			// transactions 的最大长度
+			maxCycle := len(transactions) * 2
+
+			for {
+				if len(transactions) == 0 || maxCycle == 0 {
+					break
+				}
+				transaction := transactions[0]
+				transactions = transactions[1:]
+
+				account := transaction.Account
+				num, err := decimal.NewFromString(transaction.Number)
+				if err != nil {
+					continue
+				}
+				if currentLinkNode.Source == -1 && num.IsNegative() {
+					if sourceTransaction.Account == "" {
+						sourceTransaction = transaction
+					}
+					currentLinkNode.Source = indexOf(nodes, account)
+					if currentLinkNode.Target == -1 {
+						currentLinkNode.Value = num
+					} else {
+						// 比较 link node value 和 num 大小
+						delta := currentLinkNode.Value.Add(num)
+						if delta.IsZero() {
+							currentLinkNode.Value = num.Abs()
+						} else if delta.IsNegative() { // source > target
+							targetNumber, _ := decimal.NewFromString(targetTransaction.Number)
+							currentLinkNode.Value = targetNumber.Abs()
+							sourceTransaction.Number = delta.String()
+							transactions = append(transactions, sourceTransaction)
+						} else { // source < target
+							targetTransaction.Number = delta.String()
+							transactions = append(transactions, targetTransaction)
+						}
+						// 完成一个 linkNode 的构建，重置判定条件
+						sourceTransaction.Account = ""
+						targetTransaction.Account = ""
+						links = append(links, *currentLinkNode)
+						currentLinkNode = NewAccountSankeyLink()
+					}
+				} else if currentLinkNode.Target == -1 && num.IsPositive() {
+					if targetTransaction.Account == "" {
+						targetTransaction = transaction
+					}
+					currentLinkNode.Target = indexOf(nodes, account)
+					if currentLinkNode.Source == -1 {
+						currentLinkNode.Value = num
+					} else {
+						delta := currentLinkNode.Value.Add(num)
+						if delta.IsZero() {
+							currentLinkNode.Value = num.Abs()
+						} else if delta.IsNegative() { // source > target
+							currentLinkNode.Value = num.Abs()
+							sourceTransaction.Number = delta.String()
+							transactions = append(transactions, sourceTransaction)
+						} else { // source < target
+							sourceNumber, _ := decimal.NewFromString(sourceTransaction.Number)
+							currentLinkNode.Value = sourceNumber.Abs()
+							targetTransaction.Number = delta.String()
+							transactions = append(transactions, targetTransaction)
+						}
+						// 完成一个 linkNode 的构建，重置判定条件
+						sourceTransaction.Account = ""
+						targetTransaction.Account = ""
+						links = append(links, *currentLinkNode)
+						currentLinkNode = NewAccountSankeyLink()
+					}
+				} else {
+					// 将当前的 transaction 加入到队列末尾
+					transactions = append(transactions, transaction)
+				}
+				maxCycle -= 1
+			}
+		}
+		accountSankeyResult.Links = links
+		// 同样source和target的link进行归并
+		accountSankeyResult.Links = aggregateLinkNodes(accountSankeyResult.Links)
+		//// source/target相反的link进行合并
+		//accountSankeyResult.Nodes = nodes
+		// 处理桑基图的link循环指向的问题
+		if hasCycle(accountSankeyResult.Links) {
+			newNodes, newLinks := breakCycleAndAddNode(accountSankeyResult.Nodes, accountSankeyResult.Links)
+			accountSankeyResult.Nodes = newNodes
+			accountSankeyResult.Links = newLinks
+		}
+	}
+	// 过滤 source 和 target 相同的节点
+
+	return accountSankeyResult
+}
+
+// 检查是否存在循环引用
+func hasCycle(links []AccountSankeyLink) bool {
+	visited := make(map[int]bool)
+	recStack := make(map[int]bool)
+
+	var dfs func(node int) bool
+	dfs = func(node int) bool {
+		if recStack[node] {
+			return true // 找到循环
+		}
+		if visited[node] {
+			return false // 已访问过，不再检查
+		}
+
+		visited[node] = true
+		recStack[node] = true
+
+		// 检查所有 links，看是否有从当前节点指向其他节点
+		for _, link := range links {
+			if link.Source == node {
+				if dfs(link.Target) {
+					return true
+				}
+			}
+		}
+		recStack[node] = false // 当前节点的 DFS 结束
+		return false
+	}
+
+	// 遍历所有节点
+	for _, link := range links {
+		if dfs(link.Source) {
+			return true // 发现循环
+		}
+	}
+
+	return false // 没有循环
+}
+
+// 打破循环引用，添加新的节点
+func breakCycleAndAddNode(nodes []AccountSankeyNode, links []AccountSankeyLink) ([]AccountSankeyNode, []AccountSankeyLink) {
+	visited := make(map[int]bool)
+	recStack := make(map[int]bool)
+	newNodeCount := 0 // 计数新节点
+
+	var dfs func(node int) bool
+	newNodes := make(map[int]int) // 记录新节点的映射
+
+	dfs = func(node int) bool {
+		if recStack[node] {
+			return true // 找到循环
+		}
+		if visited[node] {
+			return false // 已访问过，不再检查
+		}
+
+		visited[node] = true
+		recStack[node] = true
+
+		// 遍历所有 links，看是否有从当前节点指向其他节点
+		for _, link := range links {
+			if link.Source == node {
+				if dfs(link.Target) {
+					// 检测到循环，创建新节点
+					originalNode := nodes[node]
+					newNode := AccountSankeyNode{
+						Name: originalNode.Name + "1", // 新节点名称
+					}
+
+					// 将新节点添加到 nodes 列表中
+					nodes = append(nodes, newNode)
+					newNodeIndex := len(nodes) - 1
+					newNodes[node] = newNodeIndex // 记录原节点到新节点的映射
+
+					// 更新当前节点的所有链接，将 target 指向新节点
+					for i := range links {
+						if links[i].Source == node {
+							links[i].Target = newNodeIndex
+						}
+					}
+
+					newNodeCount++ // 增加新节点计数
+				}
+			}
+		}
+		recStack[node] = false // 当前节点的 DFS 结束
+		return false
+	}
+
+	// 遍历所有节点，检测循环
+	for _, link := range links {
+		if !visited[link.Source] {
+			dfs(link.Source) // 如果未访问过，则调用 DFS
+		}
+	}
+
+	return nodes, links
+}
+
+func contains(nodes []AccountSankeyNode, str string) bool {
+	for _, s := range nodes {
+		if s.Name == str {
+			return true
+		}
+	}
+	return false
+}
+
+func indexOf(nodes []AccountSankeyNode, str string) int {
+	idx := 0
+	for _, s := range nodes {
+		if s.Name == str {
+			return idx
+		}
+		idx += 1
+	}
+	return -1
+}
+
+func groupTransactionsByID(transactions []Transaction) map[string][]Transaction {
+	grouped := make(map[string][]Transaction)
+
+	for _, transaction := range transactions {
+		grouped[transaction.Id] = append(grouped[transaction.Id], transaction)
+	}
+
+	return grouped
+}
+
+// 聚合函数，聚合相同 source 和 target（相反方向）的值
+func aggregateLinkNodes(links []AccountSankeyLink) []AccountSankeyLink {
+	// 创建一个映射来存储连接
+	nodeMap := make(map[string]decimal.Decimal)
+
+	for _, link := range links {
+		if link.Source == link.Target {
+			fmt.Printf("%-%s-%d", link.Source, link.Target, link.Value)
+			continue
+		}
+
+		key := fmt.Sprintf("%d-%d", link.Source, link.Target)
+		reverseKey := fmt.Sprintf("%d-%d", link.Target, link.Source)
+		if existingValue, found := nodeMap[key]; found {
+			// 如果已存在相同方向，累加 value
+			nodeMap[key] = existingValue.Add(link.Value)
+		} else if existingValue, found := nodeMap[reverseKey]; found {
+			// 如果存在相反方向，确定最终的 source 和 target
+			totalValue := existingValue.Sub(link.Value)
+			if totalValue.IsPositive() {
+				nodeMap[reverseKey] = totalValue
+			} else if totalValue.IsZero() {
+				delete(nodeMap, reverseKey)
+			} else {
+				delete(nodeMap, reverseKey)
+				nodeMap[key] = totalValue.Abs()
+			}
+		} else {
+			// 否则直接插入新的 value
+			nodeMap[key] = link.Value
+		}
+	}
+
+	// 将结果转换为 slice
+	result := make([]AccountSankeyLink, 0)
+	for key, value := range nodeMap {
+		var parts = strings.Split(key, "-")
+		source, _ := strconv.Atoi(parts[0])
+		target, _ := strconv.Atoi(parts[1])
+		result = append(result, AccountSankeyLink{Source: source, Target: target, Value: value})
+	}
+
+	return result
 }
 
 type MonthTotalBQLResult struct {
@@ -480,33 +903,6 @@ func StatsPayee(c *gin.Context) {
 	OK(c, result)
 }
 
-type StatsPricesResult struct {
-	Date      string `json:"date"`
-	Commodity string `json:"commodity"`
-	Currency  string `json:"operatingCurrency"`
-	Value     string `json:"value"`
-}
-
 func StatsCommodityPrice(c *gin.Context) {
-	ledgerConfig := script.GetLedgerConfigFromContext(c)
-	output := script.BeanReportAllPrices(ledgerConfig)
-	script.LogInfo(ledgerConfig.Mail, output)
-
-	statsPricesResultList := make([]StatsPricesResult, 0)
-	lines := strings.Split(output, "\n")
-	// foreach lines
-	for _, line := range lines {
-		if strings.Trim(line, " ") == "" {
-			continue
-		}
-		// split line by " "
-		words := strings.Fields(line)
-		statsPricesResultList = append(statsPricesResultList, StatsPricesResult{
-			Date:      words[0],
-			Commodity: words[2],
-			Value:     words[3],
-			Currency:  words[4],
-		})
-	}
-	OK(c, statsPricesResultList)
+	OK(c, script.BeanReportAllPrices(script.GetLedgerConfigFromContext(c)))
 }

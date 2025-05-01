@@ -2,10 +2,20 @@ package script
 
 import (
 	"bytes"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
+	"io/ioutil"
 	"math/rand"
 	"net"
+	"os/exec"
 	"time"
 )
+
+func checkCommandExists(command string) bool {
+	cmd := exec.Command(command, "--version")
+	_, err := cmd.Output()
+	return err == nil
+}
 
 func GetIpAddress() string {
 	addrs, _ := net.InterfaceAddrs()
@@ -53,7 +63,7 @@ func getTimeStamp(str_date string) Timestamp {
 	return Timestamp(the_time.Unix())
 }
 
-//获取1到2个日期字符串中更大的日期
+// 获取1到2个日期字符串中更大的日期
 func getMaxDate(str_date1 string, str_date2 string) string {
 	var max_date string
 	if str_date1 != "" && str_date2 == "" {
@@ -78,29 +88,30 @@ func getMaxDate(str_date1 string, str_date2 string) string {
 	return max_date
 }
 
-// 获取1-2个日期字符串中最小的日期值
-// 如果双参数均为空，则返回账簿开始记账日期
-func getMinDate(str_date1 string, str_date2 string) string {
-	//time_layout := "2006-01-02 15:04:05"
-	var min_date string
-	if str_date1 != "" && str_date2 == "" {
-		// 只定义了第一个账户，取第一个账户的日期为准
-		min_date = str_date1
-	} else if str_date1 == "" && str_date2 != "" {
-		// 只定义了第二个账户，取第二个账户的日期为准
-		min_date = str_date2
-	} else if str_date1 != "" && str_date2 != "" {
-		// 重复定义的账户，取最早的时间
-		t1 := getTimeStamp(str_date1)
-		t2 := getTimeStamp(str_date2)
-		if t1 < t2 {
-			min_date = str_date1
-		} else {
-			min_date = str_date2
-		}
-	} else if str_date1 == "" && str_date2 == "" {
-		// 没有定义账户，取固定日期"1970-01-01"
-		min_date = "1970-01-01"
+// ConvertGBKToUTF8 将 GBK 编码的字符串转换为 UTF-8 编码
+func ConvertGBKToUTF8(gbkStr string) (string, error) {
+	if !isWindows() {
+		return gbkStr, nil
 	}
-	return min_date
+	// 创建一个 GBK 到 UTF-8 的转换器
+	reader := transform.NewReader(bytes.NewReader([]byte(gbkStr)), simplifiedchinese.GBK.NewDecoder())
+
+	// 将转换后的内容读出为 UTF-8 字符串
+	utf8Bytes, err := ioutil.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+
+	return string(utf8Bytes), nil
+}
+
+func GetMonth(date string) (string, error) {
+	// 解析日期字符串
+	parsedDate, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return "", err
+	}
+	// 格式化日期为 "YYYY-MM" 格式
+	formattedDate := parsedDate.Format("2006-01")
+	return formattedDate, nil
 }

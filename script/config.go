@@ -33,13 +33,14 @@ type Config struct {
 }
 
 type Account struct {
-	Acc                  string            `json:"account"`
-	StartDate            string            `json:"startDate"`
-	Currency             string            `json:"currency,omitempty"`          // 货币
-	CurrencySymbol       string            `json:"currencySymbol,omitempty"`    // 货币符号
-	Price                string            `json:"price,omitempty"`             // 汇率
-	PriceDate            string            `json:"priceDate,omitempty"`         // 汇率日期
-	IsAnotherCurrency    bool              `json:"isAnotherCurrency,omitempty"` // 其他币种标识
+	Acc       string `json:"account"`
+	StartDate string `json:"startDate"`
+	Currency  string `json:"currency,omitempty"` // 货币
+	//CurrencySymbol       string            `json:"currencySymbol,omitempty"`    // 货币符号
+	Currencies []AccountCurrency `json:"currencies,omitempty"` // 多个货币单位
+	//Price                string            `json:"price,omitempty"`             // 汇率
+	//PriceDate            string            `json:"priceDate,omitempty"`         // 汇率日期
+	//IsAnotherCurrency    bool              `json:"isAnotherCurrency,omitempty"` // 其他币种标识
 	IsCurrent            bool              `json:"isCurrent,omitempty"`
 	Positions            []AccountPosition `json:"positions,omitempty"`
 	MarketNumber         string            `json:"marketNumber,omitempty"`
@@ -48,6 +49,14 @@ type Account struct {
 	EndDate              string            `json:"endDate,omitempty"`
 	Type                 *AccountType      `json:"type,omitempty"`
 	Status               bool              `json:"status,omitempty"`
+}
+
+type AccountCurrency struct {
+	Currency          string `json:"currency,omitempty"`          // 货币
+	CurrencySymbol    string `json:"currencySymbol,omitempty"`    // 货币符号
+	IsAnotherCurrency bool   `json:"isAnotherCurrency,omitempty"` // 其他币种标识
+	Price             string `json:"price,omitempty"`             // 汇率
+	PriceDate         string `json:"priceDate,omitempty"`         // 汇率日期
 }
 
 type AccountPosition struct {
@@ -475,11 +484,8 @@ type CommodityPrice struct {
 	Value     string `json:"value"`
 }
 
-func RefreshLedgerCurrency(ledgerConfig *Config) []LedgerCurrency {
-	// 查询货币获取当前汇率
-	output := BeanReportAllPrices(ledgerConfig)
-	statsPricesResultList := make([]CommodityPrice, 0)
-	lines := strings.Split(output, "\n")
+func newCommodityPriceListFromString(lines []string) []CommodityPrice {
+	commodityPriceList := make([]CommodityPrice, 0, len(lines))
 	// foreach lines
 	for _, line := range lines {
 		if strings.Trim(line, " ") == "" {
@@ -487,14 +493,19 @@ func RefreshLedgerCurrency(ledgerConfig *Config) []LedgerCurrency {
 		}
 		// split line by " "
 		words := strings.Fields(line)
-		statsPricesResultList = append(statsPricesResultList, CommodityPrice{
+		commodityPriceList = append(commodityPriceList, CommodityPrice{
 			Date:      words[0],
 			Commodity: words[2],
 			Value:     words[3],
 			Currency:  words[4],
 		})
 	}
+	return commodityPriceList
+}
 
+func RefreshLedgerCurrency(ledgerConfig *Config) []LedgerCurrency {
+	// 查询货币获取当前汇率
+	statsPricesResultList := BeanReportAllPrices(ledgerConfig)
 	// statsPricesResultList 转为 map
 	existCurrencyMap := make(map[string]CommodityPrice)
 	for _, statsPricesResult := range statsPricesResultList {
@@ -566,6 +577,11 @@ func GetServerCommoditySymbol(commodity string) string {
 func GetAccountPrefix(account string) string {
 	nodes := strings.Split(account, ":")
 	return nodes[0]
+}
+
+func GetAccountName(account string) string {
+	nodes := strings.Split(account, ":")
+	return nodes[len(nodes)-1]
 }
 
 func GetAccountIconName(account string) string {

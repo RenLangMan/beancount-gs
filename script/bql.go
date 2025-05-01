@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,8 @@ type QueryParams struct {
 	FromYear    int    `bql:"year ="`
 	FromMonth   int    `bql:"month ="`
 	Where       bool   `bql:"where"`
+	ID          string `bql:"id ="`
+	IDList      string `bql:"id in"`
 	Currency    string `bql:"currency ="`
 	Year        int    `bql:"year ="`
 	Month       int    `bql:"month ="`
@@ -58,6 +61,10 @@ func GetQueryParams(c *gin.Context) QueryParams {
 		queryParams.Limit = 100
 		hasWhere = true
 	}
+	if c.Query("id") != "" {
+		queryParams.ID = c.Query("id")
+		hasWhere = true
+	}
 	queryParams.Where = hasWhere
 	if c.Query("path") != "" {
 		queryParams.Path = c.Query("path")
@@ -77,6 +84,19 @@ func GetQueryParams(c *gin.Context) QueryParams {
 //	}
 //	return nil
 //}
+
+func BQLPrint(ledgerConfig *Config, transactionId string) (string, error) {
+	// PRINT FROM id = 'xxx'
+	output, err := queryByBQL(ledgerConfig, "PRINT FROM id = '"+transactionId+"'")
+	if err != nil {
+		return "", err
+	}
+	utf8, err := ConvertGBKToUTF8(output)
+	if err != nil {
+		return "", err
+	}
+	return utf8, nil
+}
 
 func BQLQueryList(ledgerConfig *Config, queryParams *QueryParams, queryResultPtr interface{}) error {
 	assertQueryResultIsPointer(queryResultPtr)
@@ -104,13 +124,33 @@ func BQLQueryListByCustomSelect(ledgerConfig *Config, selectBql string, queryPar
 	return nil
 }
 
-func BeanReportAllPrices(ledgerConfig *Config) string {
+func BeanReportAllPrices(ledgerConfig *Config) []CommodityPrice {
 	beanFilePath := GetLedgerPriceFilePath(ledgerConfig.DataPath)
-
-	LogInfo(ledgerConfig.Mail, "bean-report "+beanFilePath+" all_prices")
-	cmd := exec.Command("bean-report", beanFilePath, "all_prices")
+	var (
+		command       string
+		useBeanReport = checkCommandExists("bean-report")
+	)
+	// `bean-report` had been deprecated since https://github.com/beancount/beancount/commit/a7c4f14f083de63e8d4e5a8d3664209daf95e1ec,
+	// we use `bean-query` instead. Here we add a check to use `bean-report` if `bean-query` is not installed for better compatibility.
+	if useBeanReport {
+		command = fmt.Sprintf("bean-report %s all_prices", beanFilePath)
+	} else {
+		// 'price' column works as a column placeholder to be consistent with the output of `bean-report`.
+		command = fmt.Sprintf(`bean-query %s "SELECT date, 'price', currency, price FROM account ~ 'Assets' WHERE price is not NULL"`, beanFilePath)
+	}
+	LogInfo(ledgerConfig.Mail, command)
+	re := regexp.MustCompile(`"([^"]*)"|(\S+)`)
+	cmds := re.FindAllString(command, -1)
+	cmd := exec.Command(cmds[0], cmds[1:]...)
 	output, _ := cmd.Output()
-	return string(output)
+	outputStr := string(output)
+	lines := strings.Split(outputStr, "\n")
+	LogInfo(ledgerConfig.Mail, outputStr)
+	// Remove the first two lines of the output since they are the header and separator with BQL output.
+	if !useBeanReport && len(lines) > 2 {
+		lines = lines[2:]
+	}
+	return newCommodityPriceListFromString(lines)
 }
 
 func bqlRawQuery(ledgerConfig *Config, selectBql string, queryParamsPtr *QueryParams, queryResultPtr interface{}) (string, error) {
