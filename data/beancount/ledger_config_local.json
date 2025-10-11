@@ -1,0 +1,26 @@
+{
+    "3978d009748ef54ad6ef7bf851bd55491b1fe6bb": {
+        "id": "3978d009748ef54ad6ef7bf851bd55491b1fe6bb",
+        "mail": "happy",
+        "title": "happy",
+        "dataPath": "data/beancount/3978d009748ef54ad6ef7bf851bd55491b1fe6bb",
+        "operatingCurrency": "CNY",
+        "startDate": "2015-01-01",
+        "isBak": true,
+        "openingBalances": "Equity:Opening-Balances",
+        "createDate": "2025-09-13",
+        "debugMode": false
+    },
+    "f9d3ea344814ef398e16f2b072ff9c88be8b03d0": {
+        "id": "f9d3ea344814ef398e16f2b072ff9c88be8b03d0",
+        "mail": "账本001",
+        "title": "账本001",
+        "dataPath": ".\\data\\beancount/f9d3ea344814ef398e16f2b072ff9c88be8b03d0",
+        "operatingCurrency": "CNY",
+        "startDate": "2015-01-01",
+        "isBak": true,
+        "openingBalances": "Equity:Opening-Balances",
+        "createDate": "2025-09-18",
+        "debugMode": false
+    }
+}

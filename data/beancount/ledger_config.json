@@ -1,0 +1,14 @@
+{
+    "3978d009748ef54ad6ef7bf851bd55491b1fe6bb": {
+        "id": "3978d009748ef54ad6ef7bf851bd55491b1fe6bb",
+        "mail": "happy",
+        "title": "happy",
+        "dataPath": "data/beancount/3978d009748ef54ad6ef7bf851bd55491b1fe6bb",
+        "operatingCurrency": "CNY",
+        "startDate": "2015-01-01",
+        "isBak": true,
+        "openingBalances": "Equity:Opening-Balances",
+        "createDate": "2025-09-13",
+        "debugMode": false
+    }
+}
