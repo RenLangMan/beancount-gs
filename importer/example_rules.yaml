@@ -1,0 +1,47 @@
+# 规则文件示例
+meta:
+  generated_at: "2023-01-01T00:00:00Z"
+  active_rules_only: true
+  payment_rule_count: 2
+  counterparty_rule_count: 3
+
+# 支付规则定义
+payment_rules:
+  - name: "支付宝余额消费"
+    payment_method: "余额"
+    transaction_type: "消费"
+    default_amount: "0.00"
+    example_count: 10
+    debit_accounts: ["Expenses:Food", "Expenses:Shopping"]
+    credit_accounts: ["Assets:Alipay"]
+
+  - name: "微信支付消费"
+    payment_method: "微信支付"
+    transaction_type: "消费"
+    default_amount: "0.00"
+    example_count: 8
+    debit_accounts: ["Expenses:Food", "Expenses:Shopping"]
+    credit_accounts: ["Assets:Wechat"]
+
+# 对方规则定义
+counterparty_rules:
+  - name: "餐饮商家"
+    counterparty: "餐厅"
+    description: "餐饮"
+    category: "餐饮"
+    account: "Expenses:Food"
+    example_count: 15
+
+  - name: "超市购物"
+    counterparty: "超市"
+    description: "购物"
+    category: "购物"
+    account: "Expenses:Shopping"
+    example_count: 12
+
+  - name: "交通出行"
+    counterparty: "滴滴"
+    description: "出行"
+    category: "交通"
+    account: "Expenses:Transport"
+    example_count: 5
