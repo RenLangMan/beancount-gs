@@ -1,34 +1,38 @@
 package script
 
 import (
-	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// 调试模式下的错误处理
-// 修改 handleError 函数中的提示
-// handleError 处理错误，根据调试模式决定处理方式：
-// - 调试模式下 panic 抛出错误
-// - 生产环境下记录警告日志
+// handleError 处理错误并根据当前运行模式采取不同的行为：
+// - 在调试模式下，触发 panic 并输出错误信息。
+// - 在生产环境下，记录警告日志。
+//
 // 参数：
 //
-//	err: 错误对象
-//	message: 自定义错误信息
+//	err: 需要处理的错误对象。
+//	message: 自定义的错误描述信息。
+//
+// 注意：
+//
+//	此函数适用于内部错误处理，不对外暴露。
+//
+//go:noinline
 func handleError(err error, message string) {
 	if IsDebugMode() {
-		panic(fmt.Sprintf("%s: %v", message, err))
+		panic(fmt.Errorf("%s: %v", message, err))
 	} else {
 		// 生产环境下记录警告日志
 		log.Printf("警告: %s: %v", message, err)
@@ -40,17 +44,21 @@ QueryParams 结构体定义了查询参数，包含多个字段用于构建查�
 每个字段都带有 bql 标签，用于指定在 BQL 查询中的对应字段名。
 */
 type QueryParams struct {
-	From               bool   `bql:"From"`             // 是否包含 From 子句
-	FromYear           int    `bql:"year ="`           // From 子句中的年份条件
-	FromMonth          int    `bql:"month ="`          // From 子句中的月份条件
+	// 日期范围相关字段
+	FromYear  int    `bql:"year ="`                 // From 子句中的年份条件
+	FromMonth int    `bql:"month ="`                // From 子句中的月份条件
+	Year      int    `bql:"year ="`                 // 年份等于条件
+	Month     int    `bql:"month ="`                // 月份等于条件
+	MinDate   string `bql:"date >=" json:"minDate"` // 最小日期(格式: "YYYY-MM-DD")
+	MaxDate   string `bql:"date <=" json:"maxDate"` // 最大日期(格式: "YYYY-MM-DD")
+
+	// 其他查询条件
 	Where              bool   `bql:"where"`            // 是否包含 Where 子句
 	ID                 string `bql:"id ="`             // ID 等于条件
 	IDList             string `bql:"id in"`            // ID 列表条件
 	Currency           string `bql:"currency ="`       // 货币等于条件
-	Year               int    `bql:"year ="`           // 年份等于条件
-	Month              int    `bql:"month ="`          // 月份等于条件
 	Tag                string `bql:"in tags"`          // 用于 tag in tags 条件
-	TagNotNull         string `bql:"tags IS NOT NULL"` // 标签非空条件
+	TagsNotNull        bool   `bql:"tags IS NOT NULL"` // 标签非空条件
 	Account            string `bql:"account ="`        // 账户等于条件
 	AccountLike        string `bql:"account ~"`        // 账户模糊匹配条件
 	StrictAccountMatch bool   // true表示账户必须使用精确匹配，false表示使用模糊匹配
@@ -59,13 +67,13 @@ type QueryParams struct {
 	Limit              int    `bql:"limit"`    // 限制结果数量
 	Path               string // 查询路径
 	Offset             int    // 查询偏移量
-	DateRange          bool   // 启用日期范围查询
 }
 
 // HasConditions 检查查询参数是否包含任何条件
 // 返回 true 如果 Year, Month, Account, AccountLike, Tag, ID 或 Currency 任一字段不为零值
 func (queryParams *QueryParams) HasConditions() bool {
 	return queryParams.Year != 0 || queryParams.Month != 0 ||
+		queryParams.FromYear != 0 || queryParams.FromMonth != 0 ||
 		queryParams.Account != "" || queryParams.AccountLike != "" ||
 		queryParams.Tag != "" || queryParams.ID != "" ||
 		queryParams.Currency != ""
@@ -86,7 +94,24 @@ func (queryParams *QueryParams) HasConditions() bool {
 //   - Year/Month: 0 (表示不限制)
 //
 // 注意：所有参数都会经过有效性检查（非空且不为"undefined"/"null"）
-func GetQueryParams(c *gin.Context) QueryParams {
+// GetQueryParams 从 gin.Context 中解析查询参数并返回 QueryParams 结构体
+// 支持以下查询参数：
+//   - year/month: 数值型参数，用于时间范围筛选
+//   - tag/account/type/id/idList/currency/path: 字符串型参数
+//   - groupBy/orderBy: 分组和排序参数
+//   - limit: 限制返回结果数量
+//   - strictMode: 布尔值，控制账户匹配模式（精确/模糊）
+//
+// 默认值：
+//   - StrictAccountMatch: true (精确匹配)
+//   - OrderBy: "date desc"
+//   - Limit: 100
+//   - Year/Month: 0 (表示不限制)
+//
+// 注意：所有参数都会经过有效性检查（非空且不为"undefined"/"null"）
+// GetQueryParams 从 gin.Context 中解析查询参数并返回 QueryParams 结构体
+// GetQueryParams 从 gin.Context 中解析查询参数并返回 QueryParams 结构体
+func GetQueryParams(c *gin.Context) (QueryParams, error) {
 	queryParams := QueryParams{
 		StrictAccountMatch: true,
 		OrderBy:            "date desc",
@@ -98,22 +123,37 @@ func GetQueryParams(c *gin.Context) QueryParams {
 		return val != "" && val != "undefined" && val != "null" && val != "None"
 	}
 
-	// 数值型条件
-	if year := c.Query("year"); isValidParam(year) {
-		if val, err := strconv.Atoi(year); err == nil && val > 0 {
-			queryParams.Year = val
-			DebugLogWithContext("GetQueryParams", "设置有效年份: %d", val)
+	// 处理年份参数
+	if val := c.Query("year"); isValidParam(val) {
+		if num, err := strconv.Atoi(val); err == nil && num > 0 {
+			queryParams.Year = num
+			DebugLogWithContext("GetQueryParams", "设置有效年份: %d", num)
 		} else {
-			WarnLogWithContext("GetQueryParams", "无效年份参数: %s", year)
+			WarnLogWithContext("GetQueryParams", "无效year参数: %s", val)
 		}
 	}
 
-	if month := c.Query("month"); isValidParam(month) {
-		if val, err := strconv.Atoi(month); err == nil && val > 0 && val <= 12 {
-			queryParams.Month = val
-			DebugLogWithContext("GetQueryParams", "设置有效月份: %d", val)
+	// 处理月份参数
+	if val := c.Query("month"); isValidParam(val) {
+		if num, err := strconv.Atoi(val); err == nil && num > 0 && num <= 12 {
+			queryParams.Month = num
+			DebugLogWithContext("GetQueryParams", "设置有效月份: %d", num)
 		} else {
-			WarnLogWithContext("GetQueryParams", "无效月份参数: %s", month)
+			WarnLogWithContext("GetQueryParams", "无效month参数: %s", val)
+		}
+	}
+
+	// 处理From年份参数
+	if val := c.Query("fromYear"); isValidParam(val) {
+		if num, err := strconv.Atoi(val); err == nil && num > 0 {
+			queryParams.FromYear = num
+		}
+	}
+
+	// 处理From月份参数
+	if val := c.Query("fromMonth"); isValidParam(val) {
+		if num, err := strconv.Atoi(val); err == nil && num > 0 && num <= 12 {
+			queryParams.FromMonth = num
 		}
 	}
 
@@ -125,6 +165,7 @@ func GetQueryParams(c *gin.Context) QueryParams {
 		}
 	}
 
+	// 处理其他字符串参数
 	setStringParam(&queryParams.Tag, "tag")
 	setStringParam(&queryParams.Account, "account")
 	setStringParam(&queryParams.ID, "id")
@@ -140,36 +181,120 @@ func GetQueryParams(c *gin.Context) QueryParams {
 		DebugLogWithContext("GetQueryParams", "设置账户类型(模糊匹配): %s", accType)
 	}
 
-	// 处理排序参数
+	// 处理orderBy参数（必须覆盖默认值）
 	if orderBy := c.Query("orderBy"); isValidParam(orderBy) {
 		queryParams.OrderBy = orderBy
-	} else if queryParams.Year > 0 || queryParams.Month > 0 {
-		queryParams.OrderBy = "year desc, month desc"
 	}
 
-	// 处理limit参数
-	if limit := c.Query("limit"); isValidParam(limit) {
-		if val, err := strconv.Atoi(limit); err == nil && val > 0 {
-			queryParams.Limit = val
+	// 处理limit参数（必须覆盖默认值）
+	if limitStr := c.Query("limit"); isValidParam(limitStr) {
+		if limit, err := strconv.Atoi(limitStr); err == nil && limit > 0 {
+			queryParams.Limit = limit
 		}
 	}
 
-	// 处理严格模式参数
-	if strictMode := c.Query("strictMode"); isValidParam(strictMode) {
-		if strict, err := strconv.ParseBool(strictMode); err == nil {
-			queryParams.StrictAccountMatch = strict
-			DebugLogWithContext("GetQueryParams", "设置严格模式: %t", strict)
-		}
-	}
+	// 计算日期范围
+	queryParams.CalculateDateRange()
 
-	// 验证必要参数
-	if queryParams.Year == 0 && queryParams.Month == 0 &&
-		queryParams.Account == "" && queryParams.AccountLike == "" {
-		WarnLogWithContext("GetQueryParams", "缺少必要查询参数")
-	}
-
+	// 设置Where条件
 	queryParams.Where = queryParams.HasConditions()
-	return queryParams
+
+	return queryParams, nil
+}
+
+// CalculateDateRange 计算日期范围的辅助方法（优化版）
+func (q *QueryParams) CalculateDateRange() {
+
+	if IsDebugMode() {
+		// 将QueryParams结构体转换为JSON格式的字符串}
+		jsonData, _ := json.MarshalIndent(q, "", "  ")
+		fmt.Printf("\n=== CalculateDateRange计算日期范围传入的QueryParams ===\n")
+		fmt.Println(string(jsonData))
+		fmt.Println("=====================================")
+	}
+
+	loc := time.Local // 使用本地时区
+	q.MinDate = ""
+	q.MaxDate = ""
+
+	// 使用switch判断日期范围模式
+	switch {
+	// 模式1：处理 fromYear/fromMonth 到 toYear/toMonth 的日期范围
+	case q.FromYear > 0:
+		DebugLogWithContext("CalculateDateRange", "模式1：处理 fromYear/fromMonth 到 toYear/toMonth 的日期范围,传入参数：起始年份：%d,起始月份：%d,结束年份：%d,结束月份：%d", q.FromYear, q.FromMonth, q.Year, q.Month)
+		startMonth := 1
+		if q.FromMonth > 0 {
+			startMonth = q.FromMonth
+		}
+		minDate := time.Date(q.FromYear, time.Month(startMonth), 1, 0, 0, 0, 0, loc)
+		q.MinDate = minDate.Format("2006-01-02")
+		DebugLogWithContext("CalculateDateRange", "模式1：处理 fromYear/fromMonth 到 toYear/toMonth 的日期范围,计算起始日期：%s", q.MinDate)
+
+		// 如果没有设置结束年份，使用开始年份
+		endYear := q.FromYear
+		if q.Year > 0 {
+			endYear = q.Year
+		}
+		endMonth := 12
+		if q.Month > 0 {
+			endMonth = q.Month
+		}
+		maxDate := time.Date(endYear, time.Month(endMonth), 31, 23, 59, 59, 0, loc)
+		q.MaxDate = maxDate.Format("2006-01-02")
+
+		q.FromYear = minDate.Year()
+		q.FromMonth = int(minDate.Month())
+		q.Year = maxDate.Year()
+		q.Month = int(maxDate.Month())
+
+	// 模式2：处理 year/month 的日期范围
+	case q.Year > 0:
+		// 设置开始日期
+		startMonth := 1
+		if q.Month > 0 {
+			startMonth = q.Month
+		}
+		minDate := time.Date(q.Year, time.Month(startMonth), 1, 0, 0, 0, 0, loc)
+		q.MinDate = minDate.Format("2006-01-02")
+
+		// 设置结束日期
+		endMonth := 12
+		if q.Month > 0 {
+			endMonth = q.Month
+		}
+		maxDate := time.Date(q.Year, time.Month(endMonth), 1, 0, 0, 0, 0, loc).
+			AddDate(0, 1, -1).Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+		q.MaxDate = maxDate.Format("2006-01-02")
+
+		q.FromYear = minDate.Year()
+		q.FromMonth = int(minDate.Month())
+		q.Year = maxDate.Year()
+		q.Month = int(maxDate.Month())
+
+	// 默认情况（可选）
+	default:
+		// 默认查询最近一个月
+		if q.MinDate == "" || q.MaxDate == "" {
+
+			// 获取当前时间
+			now := time.Now()
+
+			// 计算上月1号
+			firstOfLastMonth := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())
+
+			// 计算本月末（下月1号的前一天）
+			lastOfThisMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1)
+
+			// 设置日期范围
+			q.MinDate = firstOfLastMonth.Format("2006-01-02")
+			q.MaxDate = lastOfThisMonth.Format("2006-01-02")
+
+			q.FromYear = firstOfLastMonth.Year()
+			q.FromMonth = int(firstOfLastMonth.Month())
+			q.Year = lastOfThisMonth.Year()
+			q.Month = int(lastOfThisMonth.Month())
+		}
+	}
 }
 
 //func BQLQueryOne(ledgerConfig *Config, queryParams *QueryParams, queryResultPtr interface{}) error {
@@ -253,19 +378,22 @@ func BQLQueryList(ledgerConfig *Config, queryParams *QueryParams, queryResultPtr
 
 	// 调试信息：parseResult执行结果
 	if parseErr != nil {
-		LogDebugDetailed(ledgerConfig.Mail, "BQLParse",
-			"parseResult解析失败: %v", parseErr)
+		const parseErrorFormat = "parseResult解析失败: %v"
+		LogDebugDetailed(ledgerConfig.Mail, "BQLParse", parseErrorFormat, parseErr)
 	} else {
 		resultValue := reflect.ValueOf(queryResultPtr).Elem()
-		logMessage := fmt.Sprintf("parseResult解析成功\n结果类型: %s\n种类: %s",
-			resultValue.Type().String(),
-			resultValue.Kind().String())
+		const successLog1 = "parseResult解析成功"
+		const typeLog = "结果类型: %s"
+		const kindLog = "种类: %s"
+
+		LogDebugDetailed(ledgerConfig.Mail, "BQLParse", successLog1)
+		LogDebugDetailed(ledgerConfig.Mail, "BQLParse", typeLog, resultValue.Type().String())
+		LogDebugDetailed(ledgerConfig.Mail, "BQLParse", kindLog, resultValue.Kind().String())
 
 		if resultValue.Kind() == reflect.Slice {
-			logMessage += fmt.Sprintf("\n结果包含 %d 个项目", resultValue.Len())
+			const sliceLenLog = "结果包含 %d 个项目"
+			LogDebugDetailed(ledgerConfig.Mail, "BQLParse", sliceLenLog, resultValue.Len())
 		}
-
-		LogDebugDetailed(ledgerConfig.Mail, "BQLParse", logMessage)
 	}
 
 	return parseErr
@@ -328,189 +456,243 @@ func BQLQueryListByCustomSelect(ledgerConfig *Config, selectBql string, queryPar
 	return parseErr
 }
 
+// 修改后的bqlRawQuery函数
 func bqlRawQuery(ledgerConfig *Config, selectBql string, queryParamsPtr *QueryParams, queryResultPtr interface{}) (string, error) {
 	LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder",
 		"=== 开始构建BQL查询 ===\n输入参数: selectBql='%s'\nqueryParamsPtr=%+v",
 		selectBql, queryParamsPtr)
 
-	var bql strings.Builder
-
-	// 1. SELECT 部分
-	if selectBql == "" {
-		LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder", "自动生成SELECT字段...")
-		bql.WriteString("SELECT ")
-
-		queryResultPtrType := reflect.TypeOf(queryResultPtr)
-		queryResultType := queryResultPtrType.Elem()
-		if queryResultType.Kind() == reflect.Slice {
-			queryResultType = queryResultType.Elem()
-		}
-
-		first := true
-		for i := 0; i < queryResultType.NumField(); i++ {
-			typeField := queryResultType.Field(i)
-			if b := typeField.Tag.Get("bql"); b != "" {
-				if !first {
-					bql.WriteString(", ")
-				}
-				if strings.Contains(b, "distinct") {
-					b = strings.ReplaceAll(b, "distinct", "")
-					bql.WriteString("DISTINCT ")
-				}
-				bql.WriteString(b)
-				// 保留反斜线作为分隔符
-				bql.WriteString(", '\\'")
-				first = false
-			}
-		}
-		LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder", "生成的SELECT部分: %s", bql.String())
-	} else {
-		bql.WriteString(selectBql)
+	// 1. 构建SELECT部分
+	selectPart, err := buildSelectPart(selectBql, queryResultPtr, ledgerConfig)
+	if err != nil {
+		return "", err
 	}
 
-	// 2. 记录WHERE条件构建
-	if queryParamsPtr != nil {
-		LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder",
-			"正在解析和构建WHERE条件子句...")
-		// queryParamsType := reflect.TypeOf(queryParamsPtr).Elem()
-		// queryParamsValue := reflect.ValueOf(queryParamsPtr).Elem()
-
-		hasConditions := false
-		// firstCondition := true
-
-		// 检查是否有实际条件
-		if (queryParamsPtr.Year != 0 || queryParamsPtr.Month != 0) || // 时间条件
-			(queryParamsPtr.AccountLike != "" || queryParamsPtr.Tag != "") || // 账户/标签条件
-			(queryParamsPtr.ID != "" || queryParamsPtr.Currency != "") { // ID/货币条件
-			hasConditions = true
-		}
-
-		if hasConditions {
-			// 账户匹配方式验证
-			if queryParamsPtr.Account != "" && queryParamsPtr.AccountLike != "" {
-				LogError(ledgerConfig.Mail,
-					fmt.Sprintf("参数冲突: Account='%s' 和 AccountLike='%s' 不能同时指定",
-						queryParamsPtr.Account, queryParamsPtr.AccountLike))
-				return "", fmt.Errorf("不能同时指定Account和AccountLike参数")
-			}
-
-			if queryParamsPtr.StrictAccountMatch && queryParamsPtr.AccountLike != "" {
-				LogError(ledgerConfig.Mail,
-					fmt.Sprintf("参数冲突: StrictAccountMatch=%v 但指定了AccountLike='%s'",
-						queryParamsPtr.StrictAccountMatch, queryParamsPtr.AccountLike))
-				return "", fmt.Errorf("StrictAccountMatch模式下不能使用AccountLike")
-			}
-
-			if !queryParamsPtr.StrictAccountMatch && queryParamsPtr.Account != "" {
-				LogError(ledgerConfig.Mail,
-					fmt.Sprintf("参数冲突: StrictAccountMatch=%v 但指定了Account='%s' (应使用AccountLike)",
-						queryParamsPtr.StrictAccountMatch, queryParamsPtr.Account))
-				return "", fmt.Errorf("非StrictAccountMatch模式下必须指定AccountLike")
-			}
-
-			LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder",
-				"构建前SQL: %s", bql.String())
-
-			bql.WriteString(" WHERE ")
-			firstCondition := true
-
-			// 辅助函数添加条件
-			addCondition := func(condition string) {
-				if !firstCondition {
-					bql.WriteString(" AND ")
-				}
-				bql.WriteString(condition)
-				firstCondition = false
-			}
-
-			// 时间条件
-			if queryParamsPtr.Year != 0 {
-				addCondition(fmt.Sprintf("year = %d", queryParamsPtr.Year))
-			}
-
-			if queryParamsPtr.Month != 0 {
-				addCondition(fmt.Sprintf("month = %d", queryParamsPtr.Month))
-			}
-
-			// 账户条件
-			if queryParamsPtr.Account != "" {
-				addCondition(fmt.Sprintf("account = '%s'", escapeSQLString(queryParamsPtr.Account)))
-			} else if queryParamsPtr.AccountLike != "" {
-				addCondition(fmt.Sprintf("account ~ '%s'", escapeSQLString(queryParamsPtr.AccountLike)))
-			}
-
-			// 其他条件
-			if queryParamsPtr.Tag != "" {
-				addCondition("tag in tags")
-			}
-
-			if queryParamsPtr.TagNotNull != "" {
-				addCondition("tags IS NOT NULL")
-			}
-
-			if queryParamsPtr.ID != "" {
-				addCondition(fmt.Sprintf("id = '%s'", escapeSQLString(queryParamsPtr.ID)))
-			}
-
-			LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder",
-				"构建后SQL: %s", bql.String())
-		}
+	// 2. 构建WHERE条件
+	wherePart, err := buildWherePart(queryParamsPtr, ledgerConfig)
+	if err != nil {
+		return "", err
 	}
 
-	// 在构建GROUP BY子句前添加验证
-	if queryParamsPtr != nil && queryParamsPtr.GroupBy != "" {
-		// 检查是否有聚合函数
-		hasAggregate := strings.Contains(bql.String(), "sum(") ||
-			strings.Contains(bql.String(), "count(") ||
-			strings.Contains(bql.String(), "avg(") ||
-			strings.Contains(bql.String(), "min(") ||
-			strings.Contains(bql.String(), "max(")
+	// 3. 构建GROUP BY部分
+	groupByPart := buildGroupByPart(queryParamsPtr, ledgerConfig)
 
-		if hasAggregate {
-			LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder-GroupBy", "BQL查询包含聚合函数，将添加GROUP BY子句")
-			bql.WriteString(" GROUP BY ")
-			bql.WriteString(queryParamsPtr.GroupBy)
-		} else {
-			LogDebugDetailed(ledgerConfig.Mail, "BQLBuilder-GroupBy", "BQL查询不包含聚合函数，但是指定了GROUP BY子句，将仍然添加GROUP BY子句")
-			bql.WriteString(" GROUP BY ")
-			bql.WriteString(queryParamsPtr.GroupBy)
-		}
+	// 4. 构建ORDER BY部分
+	orderByPart := buildOrderByPart(queryParamsPtr, ledgerConfig)
+
+	// 5. 构建LIMIT部分
+	limitPart := buildLimitPart(queryParamsPtr, ledgerConfig)
+
+	// 组合完整查询
+	finalQuery := strings.Join([]string{
+		selectPart,
+		wherePart,
+		groupByPart,
+		orderByPart,
+		limitPart,
+	}, " ")
+
+	// 验证SQL语法
+	if err := validateSQL(finalQuery); err != nil {
+		LogError(ledgerConfig.Mail, "SQL验证失败: "+err.Error())
+		return "", err
 	}
 
-	// 构建 ORDER BY 子句
-	if queryParamsPtr != nil && queryParamsPtr.OrderBy != "" {
-		bql.WriteString(" ORDER BY ")
-		orderBy := strings.ReplaceAll(queryParamsPtr.OrderBy, "'", "")
-		orderBy = strings.ReplaceAll(orderBy, "\"", "")
-		orderBy = strings.ReplaceAll(strings.ToLower(orderBy), "order by", "")
-		orderBy = strings.TrimSpace(orderBy)
-		bql.WriteString(orderBy)
-	}
-
-	// 构建 LIMIT 子句
-	if queryParamsPtr != nil && queryParamsPtr.Limit > 0 {
-		bql.WriteString(" LIMIT ")
-		bql.WriteString(strconv.Itoa(queryParamsPtr.Limit))
-	}
-
-	finalQuery := bql.String()
 	LogDebugDetailed(ledgerConfig.Mail, "BQLGenerator",
 		"=== 最终生成的BQL ===\n%s", finalQuery)
+	return queryByBQL(ledgerConfig, finalQuery)
+}
 
-	if strings.Contains(finalQuery, "WHERE") && strings.Contains(finalQuery, "GROUP BY") {
-		if strings.Index(finalQuery, "WHERE") > strings.Index(finalQuery, "GROUP BY") {
-			return "", fmt.Errorf("SQL语法错误: WHERE子句必须在GROUP BY之前")
+// 构建SELECT部分
+func buildSelectPart(selectBql string, queryResultPtr interface{}, ledgerConfig *Config) (string, error) {
+	if selectBql != "" {
+		return selectBql, nil
+	}
+
+	queryResultPtrType := reflect.TypeOf(queryResultPtr)
+	queryResultType := queryResultPtrType.Elem()
+	if queryResultType.Kind() == reflect.Slice {
+		queryResultType = queryResultType.Elem()
+	}
+
+	var fields []string
+	for i := 0; i < queryResultType.NumField(); i++ {
+		typeField := queryResultType.Field(i)
+		if b := typeField.Tag.Get("bql"); b != "" {
+			if strings.Contains(b, "distinct") {
+				b = strings.ReplaceAll(b, "distinct", "")
+				fields = append(fields, "DISTINCT "+b)
+			} else {
+				fields = append(fields, b)
+			}
+			fields = append(fields, "'\\'")
 		}
 	}
 
-	// 验证生成的SQL
-	if strings.Contains(finalQuery, "WHERE  AND") {
-		LogError(ledgerConfig.Mail, "!!! 检测到非法WHERE条件: "+finalQuery)
-		return "", fmt.Errorf("invalid WHERE clause")
+	if len(fields) == 0 {
+		return "", fmt.Errorf("没有可用的查询字段")
 	}
-	LogDebugDetailed(ledgerConfig.Mail, "BQLGenerator",
-		"=== 最终生成的BQL语句 ===\n%s", finalQuery)
-	return queryByBQL(ledgerConfig, finalQuery)
+
+	return "SELECT " + strings.Join(fields, ", "), nil
+}
+
+// 构建WHERE条件
+func buildWherePart(queryParamsPtr *QueryParams, ledgerConfig *Config) (string, error) {
+	if queryParamsPtr == nil || !queryParamsPtr.HasConditions() {
+		return "", nil
+	}
+
+	if !queryParamsPtr.Where {
+		DebugLogWithContext("QueryListByCustomSelect", "没有启用WHERE条件", queryParamsPtr)
+		return "", nil
+	}
+
+	if err := validateQueryParams(queryParamsPtr); err != nil {
+		return "", err
+	}
+
+	var conditions []string
+
+	// 日期条件构建
+	dateCondition := buildDateCondition(queryParamsPtr, ledgerConfig)
+	if dateCondition != "" {
+		conditions = append(conditions, dateCondition)
+	}
+
+	// 其他条件保持不变
+	if queryParamsPtr.Account != "" {
+		conditions = append(conditions,
+			fmt.Sprintf("account = '%s'", escapeSQLString(queryParamsPtr.Account)))
+	} else if queryParamsPtr.AccountLike != "" {
+		conditions = append(conditions,
+			fmt.Sprintf("account ~ '%s'", escapeSQLString(queryParamsPtr.AccountLike)))
+	}
+
+	if queryParamsPtr.Tag != "" {
+		conditions = append(conditions, "tag in tags")
+	}
+	if queryParamsPtr.TagsNotNull {
+		conditions = append(conditions, "tags IS NOT NULL")
+	}
+	if queryParamsPtr.ID != "" {
+		conditions = append(conditions,
+			fmt.Sprintf("id = '%s'", escapeSQLString(queryParamsPtr.ID)))
+	}
+
+	if len(conditions) == 0 {
+		return "", nil
+	}
+
+	return "WHERE " + strings.Join(conditions, " AND "), nil
+}
+
+// 改进的日期条件构建函数
+func buildDateCondition(params *QueryParams, ledgerConfig *Config) string {
+	var conditions []string
+
+	// 1. 处理显式指定的日期范围（最高优先级）
+	if params.MinDate != "" || params.MaxDate != "" {
+		if params.MinDate != "" {
+			conditions = append(conditions, fmt.Sprintf("date >= %s", params.MinDate))
+		}
+		if params.MaxDate != "" {
+			conditions = append(conditions, fmt.Sprintf("date <= %s", params.MaxDate))
+		}
+		return strings.Join(conditions, " AND ")
+	}
+
+	// 2. 处理FromYear/FromMonth条件（中优先级）
+	if params.FromYear > 0 || params.FromMonth > 0 {
+		if params.FromYear > 0 && params.FromMonth > 0 {
+			conditions = append(conditions,
+				fmt.Sprintf("(year > %d OR (year = %d AND month >= %d))",
+					params.FromYear, params.FromYear, params.FromMonth))
+		} else if params.FromYear > 0 {
+			conditions = append(conditions, fmt.Sprintf("year >= %d", params.FromYear))
+		} else {
+			conditions = append(conditions, fmt.Sprintf("month >= %d", params.FromMonth))
+		}
+	}
+
+	// 3. 处理Year/Month条件（低优先级）
+	if params.Year > 0 {
+		conditions = append(conditions, fmt.Sprintf("year = %d", params.Year))
+	}
+	if params.Month > 0 {
+		conditions = append(conditions, fmt.Sprintf("month = %d", params.Month))
+	}
+
+	// 4. 应用默认日期范围限制（无其他条件时）
+	if len(conditions) == 0 {
+		// 获取账本日期范围
+		startDate := ledgerConfig.StartDate
+		endDate := time.Now().Format("2006-01-02")
+
+		conditions = append(conditions,
+			fmt.Sprintf("date >= %s AND date <= %s", startDate, endDate))
+	}
+
+	if len(conditions) == 0 {
+		return ""
+	}
+
+	return "(" + strings.Join(conditions, " AND ") + ")"
+}
+
+// 构建GROUP BY部分
+func buildGroupByPart(queryParamsPtr *QueryParams, ledgerConfig *Config) string {
+	if queryParamsPtr == nil || queryParamsPtr.GroupBy == "" {
+		return ""
+	}
+	return "GROUP BY " + queryParamsPtr.GroupBy
+}
+
+// 构建ORDER BY部分
+func buildOrderByPart(queryParamsPtr *QueryParams, ledgerConfig *Config) string {
+	if queryParamsPtr == nil || queryParamsPtr.OrderBy == "" {
+		return ""
+	}
+	// 清理排序字段
+	orderBy := strings.ReplaceAll(queryParamsPtr.OrderBy, "'", "")
+	orderBy = strings.ReplaceAll(orderBy, "\"", "")
+	orderBy = strings.ReplaceAll(strings.ToLower(orderBy), "order by", "")
+	orderBy = strings.TrimSpace(orderBy)
+	return "ORDER BY " + orderBy
+}
+
+// 构建LIMIT部分
+func buildLimitPart(queryParamsPtr *QueryParams, ledgerConfig *Config) string {
+	if queryParamsPtr == nil || queryParamsPtr.Limit <= 0 {
+		return ""
+	}
+	return "LIMIT " + strconv.Itoa(queryParamsPtr.Limit)
+}
+
+// 验证查询参数
+func validateQueryParams(queryParamsPtr *QueryParams) error {
+	if queryParamsPtr.Account != "" && queryParamsPtr.AccountLike != "" {
+		return fmt.Errorf("不能同时指定Account和AccountLike参数")
+	}
+	if queryParamsPtr.StrictAccountMatch && queryParamsPtr.AccountLike != "" {
+		return fmt.Errorf("StrictAccountMatch模式下不能使用AccountLike")
+	}
+	if !queryParamsPtr.StrictAccountMatch && queryParamsPtr.Account != "" {
+		return fmt.Errorf("非StrictAccountMatch模式下必须指定AccountLike")
+	}
+	return nil
+}
+
+// 验证SQL语法
+func validateSQL(query string) error {
+	if strings.Contains(query, "WHERE  AND") {
+		return fmt.Errorf("无效的WHERE条件")
+	}
+	if strings.Contains(query, "WHERE") && strings.Contains(query, "GROUP BY") {
+		if strings.Index(query, "WHERE") > strings.Index(query, "GROUP BY") {
+			return fmt.Errorf("SQL语法错误: WHERE子句必须在GROUP BY之前")
+		}
+	}
+	return nil
 }
 
 // 辅助函数：安全转义 SQL 字符串
@@ -550,98 +732,98 @@ func BeanReportAllPrices(ledgerConfig *Config) []CommodityPrice {
 }
 
 // 修改 parseResult 函数中的相关部分
-func parseCsvResult(output string, queryResultPtr interface{}, selectOne bool) error {
-	queryResultPtrType := reflect.TypeOf(queryResultPtr)
-	queryResultType := queryResultPtrType.Elem()
+// func parseCsvResult(output string, queryResultPtr interface{}, selectOne bool) error {
+// 	queryResultPtrType := reflect.TypeOf(queryResultPtr)
+// 	queryResultType := queryResultPtrType.Elem()
 
-	if queryResultType.Kind() == reflect.Slice {
-		queryResultType = queryResultType.Elem()
-	}
+// 	if queryResultType.Kind() == reflect.Slice {
+// 		queryResultType = queryResultType.Elem()
+// 	}
 
-	// 使用 csv 解析器处理输出
-	reader := csv.NewReader(strings.NewReader(output))
-	records, err := reader.ReadAll()
-	if err != nil {
-		return err
-	}
+// 	// 使用 csv 解析器处理输出
+// 	reader := csv.NewReader(strings.NewReader(output))
+// 	records, err := reader.ReadAll()
+// 	if err != nil {
+// 		return err
+// 	}
 
-	// 跳过标题行
-	if len(records) > 0 {
-		records = records[1:]
-	}
+// 	// 跳过标题行
+// 	if len(records) > 0 {
+// 		records = records[1:]
+// 	}
 
-	if selectOne && len(records) > 0 {
-		records = records[:1]
-	}
+// 	if selectOne && len(records) > 0 {
+// 		records = records[:1]
+// 	}
 
-	l := make([]map[string]interface{}, 0)
-	for _, record := range records {
-		if len(record) == 0 {
-			continue
-		}
+// 	l := make([]map[string]interface{}, 0)
+// 	for _, record := range records {
+// 		if len(record) == 0 {
+// 			continue
+// 		}
 
-		temp := make(map[string]interface{})
-		for i, val := range record {
-			if i >= queryResultType.NumField() {
-				continue
-			}
+// 		temp := make(map[string]interface{})
+// 		for i, val := range record {
+// 			if i >= queryResultType.NumField() {
+// 				continue
+// 			}
 
-			field := queryResultType.Field(i)
-			jsonName := field.Tag.Get("json")
-			if jsonName == "" {
-				jsonName = field.Name
-			}
+// 			field := queryResultType.Field(i)
+// 			jsonName := field.Tag.Get("json")
+// 			if jsonName == "" {
+// 				jsonName = field.Name
+// 			}
 
-			val = strings.TrimSpace(val)
-			if val == "" {
-				continue
-			}
+// 			val = strings.TrimSpace(val)
+// 			if val == "" {
+// 				continue
+// 			}
 
-			switch field.Type.Kind() {
-			case reflect.Int, reflect.Int32:
-				if i, err := strconv.Atoi(val); err == nil {
-					temp[jsonName] = i
-				}
-			case reflect.String:
-				temp[jsonName] = val
-			case reflect.Float32, reflect.Float64:
-				if f, err := strconv.ParseFloat(val, 64); err == nil {
-					temp[jsonName] = f
-				}
-			case reflect.Array, reflect.Slice:
-				strArray := strings.Split(val, ",")
-				notBlanks := make([]string, 0)
-				for _, s := range strArray {
-					if s = strings.TrimSpace(s); s != "" {
-						notBlanks = append(notBlanks, s)
-					}
-				}
-				if len(notBlanks) > 0 {
-					temp[jsonName] = notBlanks
-				}
-			}
-		}
-		if len(temp) > 0 {
-			l = append(l, temp)
-		}
-	}
+// 			switch field.Type.Kind() {
+// 			case reflect.Int, reflect.Int32:
+// 				if i, err := strconv.Atoi(val); err == nil {
+// 					temp[jsonName] = i
+// 				}
+// 			case reflect.String:
+// 				temp[jsonName] = val
+// 			case reflect.Float32, reflect.Float64:
+// 				if f, err := strconv.ParseFloat(val, 64); err == nil {
+// 					temp[jsonName] = f
+// 				}
+// 			case reflect.Array, reflect.Slice:
+// 				strArray := strings.Split(val, ",")
+// 				notBlanks := make([]string, 0)
+// 				for _, s := range strArray {
+// 					if s = strings.TrimSpace(s); s != "" {
+// 						notBlanks = append(notBlanks, s)
+// 					}
+// 				}
+// 				if len(notBlanks) > 0 {
+// 					temp[jsonName] = notBlanks
+// 				}
+// 			}
+// 		}
+// 		if len(temp) > 0 {
+// 			l = append(l, temp)
+// 		}
+// 	}
 
-	var jsonBytes []byte
-	var jsonErr error // 修改变量名，避免重复声明
-	if selectOne && len(l) > 0 {
-		jsonBytes, jsonErr = json.Marshal(l[0])
-	} else {
-		jsonBytes, jsonErr = json.Marshal(l)
-	}
-	if jsonErr != nil {
-		return jsonErr
-	}
-	err = json.Unmarshal(jsonBytes, queryResultPtr) // 使用外层的 err
-	if err != nil {
-		return err
-	}
-	return nil
-}
+// 	var jsonBytes []byte
+// 	var jsonErr error // 修改变量名，避免重复声明
+// 	if selectOne && len(l) > 0 {
+// 		jsonBytes, jsonErr = json.Marshal(l[0])
+// 	} else {
+// 		jsonBytes, jsonErr = json.Marshal(l)
+// 	}
+// 	if jsonErr != nil {
+// 		return jsonErr
+// 	}
+// 	err = json.Unmarshal(jsonBytes, queryResultPtr) // 使用外层的 err
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
 
 // 原v2版本格式数据导入函数
 // 主解析函数 - 智能识别格式
@@ -951,9 +1133,9 @@ func queryByBQL(ledgerConfig *Config, bql string) (string, error) {
 func queryByBQLFallback(beanFilePath, bql string) (string, error) {
 	var cmdPath string
 	if runtime.GOOS == "windows" {
-		cmdPath = ".env_beancount-v3/Scripts/bean-query.exe"
+		cmdPath = "/workspace/.env_beancount-v3/Scripts/bean-query.exe"
 	} else {
-		cmdPath = ".env_beancount-v3/bin/bean-query"
+		cmdPath = "/workspace/.env_beancount-v3/bin/bean-query"
 	}
 
 	// 检查文件是否存在

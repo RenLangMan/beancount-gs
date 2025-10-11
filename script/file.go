@@ -3,7 +3,6 @@ package script
 import (
 	"bufio"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,7 +21,7 @@ func FileIfExist(filePath string) bool {
 }
 
 func ReadFile(filePath string) ([]byte, error) {
-	content, err := ioutil.ReadFile(filePath)
+	content, err := os.ReadFile(filePath)
 	if nil != err {
 		LogSystemError("Failed to read file (" + filePath + ")")
 		return content, err
@@ -32,7 +31,7 @@ func ReadFile(filePath string) ([]byte, error) {
 }
 
 func WriteFile(filePath string, content string) error {
-	err := ioutil.WriteFile(filePath, []byte(content), 0777)
+	err := os.WriteFile(filePath, []byte(content), 0777)
 	if err != nil {
 		LogSystemError("Failed to write file (" + filePath + ")")
 		return err

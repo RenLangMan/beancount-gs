@@ -5,18 +5,17 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"os/exec"
 	"time"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
-func checkCommandExists(command string) bool {
-	cmd := exec.Command(command, "--version")
-	_, err := cmd.Output()
-	return err == nil
-}
+// func checkCommandExists(command string) bool {
+// 	cmd := exec.Command(command, "--version")
+// 	_, err := cmd.Output()
+// 	return err == nil
+// }
 
 func GetIpAddress() string {
 	addrs, _ := net.InterfaceAddrs()

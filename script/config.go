@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/beancount-gs/utils/venv" // 添加这个导入
+	"cnb.cool/ysundy/bean/beancount-gs/utils/venv" // 添加这个导入
 	"github.com/gin-gonic/gin"
 )
 
@@ -90,10 +91,14 @@ type LedgerCurrency struct {
 	PriceDate string `json:"priceDate,omitempty"`
 }
 
+// GetServerConfig 返回当前服务器的配置信息
 func GetServerConfig() Config {
 	return serverConfig
 }
 
+// LoadServerConfig 加载服务器配置文件，如果文件不存在则使用默认配置创建。
+// 同时会加载白名单文件，如果白名单文件不存在则创建空文件并初始化空列表。
+// 返回可能出现的错误。
 func LoadServerConfig() error {
 	filePath := GetServerConfigFilePath()
 	LogSystemInfo("Load config file (" + filePath + ")")
@@ -152,7 +157,11 @@ func IsDebugMode() bool {
 
 // 设置调试模式并保存到配置文件
 func SetDebugMode(debug bool) error {
+	if serverConfig.DebugMode == debug {
+		return nil // 值未变化，无需更新
+	}
 	serverConfig.DebugMode = debug
+	LogSystemInfo(fmt.Sprintf("调试模式变更: %v -> %v", !debug, debug))
 	return UpdateServerConfig(serverConfig)
 }
 
@@ -178,7 +187,20 @@ func WarnLogWithContext(context string, format string, args ...interface{}) {
 	LogSystemInfo("[WARN] " + message)
 }
 
+// UpdateServerConfig 更新服务器配置
+// 参数:
+//
+//	config: 需要更新的配置对象
+//
+// 返回值:
+//
+//	error: 如果更新过程中出现错误则返回错误信息，否则返回nil
+//
+// 功能:
+//
+//	将传入的配置对象序列化为JSON并写入配置文件，同时更新内存中的配置缓存
 func UpdateServerConfig(config Config) error {
+	LogSystemInfo(fmt.Sprintf("更新配置文件，调试模式=%v", config.DebugMode))
 	bytes, err := json.Marshal(config)
 	if err != nil {
 		return err
@@ -218,8 +240,14 @@ func GetLedgerConfigByMail(mail string) *Config {
 }
 
 func GetLedgerConfigFromContext(c *gin.Context) *Config {
-	ledgerConfig, _ := c.Get("LedgerConfig")
-	t, _ := ledgerConfig.(*Config)
+	ledgerConfig, exists := c.Get("LedgerConfig")
+	if !exists {
+		return nil
+	}
+	t, ok := ledgerConfig.(*Config)
+	if !ok {
+		return nil
+	}
 	return t
 }
 
@@ -530,31 +558,13 @@ func GetLedgerCurrency(ledgerId string) []LedgerCurrency {
 }
 
 type CommodityPrice struct {
-	Date      string `json:"date"`
-	Commodity string `json:"commodity"`
-	Currency  string `json:"operatingCurrency"`
-	Value     string `json:"value"`
+	Date      time.Time `json:"date"`
+	Commodity string    `json:"commodity"`
+	Price     float64   `json:"price"`
+	Currency  string    `json:"currency"`
 }
 
-func newCommodityPriceListFromString(lines []string) []CommodityPrice {
-	commodityPriceList := make([]CommodityPrice, 0, len(lines))
-	// foreach lines
-	for _, line := range lines {
-		if strings.Trim(line, " ") == "" {
-			continue
-		}
-		// split line by " "
-		words := strings.Fields(line)
-		commodityPriceList = append(commodityPriceList, CommodityPrice{
-			Date:      words[0],
-			Commodity: words[2],
-			Value:     words[3],
-			Currency:  words[4],
-		})
-	}
-	return commodityPriceList
-}
-
+// 修改 RefreshLedgerCurrency 函数中的相关部分
 func RefreshLedgerCurrency(ledgerConfig *Config) []LedgerCurrency {
 	// 查询货币获取当前汇率
 	statsPricesResultList := BeanReportAllPrices(ledgerConfig)
@@ -576,8 +586,8 @@ func RefreshLedgerCurrency(ledgerConfig *Config) []LedgerCurrency {
 		} else {
 			value, exists := existCurrencyMap[c.Currency]
 			if exists {
-				price = value.Value
-				date = value.Date
+				price = fmt.Sprintf("%.4f", value.Price) // 使用 Price 字段并格式化为字符串
+				date = value.Date.Format("2006-01-02")   // 格式化 time.Time 为字符串
 			}
 		}
 		result = append(result, LedgerCurrency{
@@ -667,4 +677,42 @@ func GetVenvExecutor() *venv.VenvExecutor {
 	venvExecLock.RLock()
 	defer venvExecLock.RUnlock()
 	return venvExecutor
+}
+
+// newCommodityPriceListFromString 从字符串列表解析商品价格
+func newCommodityPriceListFromString(lines []string) []CommodityPrice {
+	var prices []CommodityPrice
+
+	for _, line := range lines {
+		words := strings.Fields(line)
+		if len(words) < 4 {
+			continue // 跳过格式不正确的行
+		}
+
+		// 解析日期
+		date, err := time.Parse("2006-01-02", words[0])
+		if err != nil {
+			LogErrorDetailed("PriceParser", "解析日期失败: %s, 错误: %v", words[0], err)
+
+			continue
+		}
+
+		// 解析价格
+		price, err := strconv.ParseFloat(words[3], 64)
+		if err != nil {
+			LogErrorDetailed("PriceParser", "解析价格失败: %s, 错误: %v", words[3], err)
+
+			continue
+		}
+
+		prices = append(prices, CommodityPrice{
+			Date:      date,     // 使用解析后的time.Time
+			Commodity: words[1], // 商品名称
+			Price:     price,    // 使用Price字段而不是Value
+			Currency:  words[2], // 货币
+		})
+	}
+
+	LogDebugDetailed("BQL", "PriceParser", "解析商品价格完成: %d 条", len(prices))
+	return prices
 }
