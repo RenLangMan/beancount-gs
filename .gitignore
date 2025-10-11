@@ -6,3 +6,29 @@ bindata.go
 beancount-gs
 gin.log
 config.json
+.env_beancount-v3/
+
+# Go
+go/bin/
+go/pkg/
+go/src/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+/go/
+
+# 模块下载缓存
+**/go/pkg/mod/cache/
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.so
+
