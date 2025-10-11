@@ -1,0 +1,7 @@
+# Windows 平台配置
+PYTHON_CMD="python"
+VENV_ACTIVATE_SCRIPT="Scripts/activate"
+BEANCOUNT_GS_BINARY="beancount-gs.exe"
+DEV_ROOT="/h/dev"
+WIN_PYTHON_PATH="H:/dev/dev_envs/winpython-3.12.10-dot/WPy64-312101/python/python.exe"
+WIN_GO_PATH="H:/dev/dev_envs/go-1.24/go/bin/go.exe"
