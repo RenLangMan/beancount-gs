@@ -13,9 +13,9 @@ import (
 	"strings" // 字符串处理工具
 	"time"    // 时间处理
 
-	"github.com/beancount-gs/script" // 项目自定义工具库
-	"github.com/gin-gonic/gin"       // HTTP Web框架
-	"github.com/shopspring/decimal"  // 高精度十进制数处理
+	"cnb.cool/ysundy/bean/beancount-gs/script" // 项目自定义工具库
+	"github.com/gin-gonic/gin"                 // HTTP Web框架
+	"github.com/shopspring/decimal"            // 高精度十进制数处理
 )
 
 // YearMonth 表示年份和月份的组合结构体
@@ -66,19 +66,29 @@ func MonthsList(c *gin.Context) {
 
 	// 从上下文获取账本配置和查询参数
 	ledgerConfig := script.GetLedgerConfigFromContext(c)
-	queryParams := script.GetQueryParams(c)
+	var queryParams script.QueryParams
+	var err error
+	queryParams, err = script.GetQueryParams(c)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
 	queryParams.OrderBy = "year desc, month desc" // 固定排序规则
 
 	script.LogSystemDebugDetailed("QueryParams", "QueryParams: %+v", queryParams)
 
 	// 执行数据库查询
 	yearMonthList := make([]YearMonth, 0)
-	err := script.BQLQueryList(ledgerConfig, &queryParams, &yearMonthList)
+	queryParams.Where = false
+	err = script.BQLQueryList(ledgerConfig, &queryParams, &yearMonthList)
 	if err != nil {
 		script.LogError(ledgerConfig.Mail, fmt.Sprintf("BQL查询失败: %v", err))
 		InternalError(c, err.Error())
 		return
+	} else {
+		script.LogBQLQueryDebug(ledgerConfig.Mail, "BQL查询成功", "QueryResult: %+v", yearMonthList)
 	}
+	queryParams.Where = true
 
 	script.LogSystemDebugDetailed("QueryResult", "Total records found: %d", len(yearMonthList))
 

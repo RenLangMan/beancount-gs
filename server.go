@@ -6,12 +6,16 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
+	"strings"
 
-	"github.com/beancount-gs/script"
-	"github.com/beancount-gs/service"
-	"github.com/beancount-gs/utils/venv"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/service"
+	"cnb.cool/ysundy/bean/beancount-gs/utils/venv"
 	"github.com/gin-gonic/gin"
 )
+
+const version = "v1.2.3rc1"
 
 // 全局变量，方便其他模块使用
 var venvExecutor *venv.VenvExecutor
@@ -74,6 +78,9 @@ func RegisterRouter(router *gin.Engine) {
 	})
 	router.StaticFS("/web", http.Dir("./public"))
 	// 公开API路由，无需授权
+	router.GET("/ping", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
+	})
 	router.GET("/api/version", service.QueryVersion)
 	router.POST("/api/check", service.CheckBeancount)
 	router.GET("/api/config", service.QueryServerConfig)
@@ -128,6 +135,7 @@ func RegisterRouter(router *gin.Engine) {
 		authorized.POST("/import/wx", service.ImportWxPayCSV)
 		authorized.POST("/import/icbc", service.ImportICBCCSV)
 		authorized.POST("/import/abc", service.ImportABCCSV)
+		authorized.POST("/import/external", service.ImportExternalFile)
 		authorized.GET("/ledger/check", service.CheckLedger)
 		authorized.DELETE("/ledger", service.DeleteLedger)
 	}
@@ -160,42 +168,91 @@ func initVenvExecutor(venvDir string) {
 	}
 }
 
+// parseToBool 通用参数转换函数，支持多种输入类型转换为bool
+// 支持类型：bool, string (true/1/yes/on/false/0/no/off), int (0/1)
+func parseToBool(value interface{}) (bool, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		v = strings.ToLower(strings.TrimSpace(v))
+		switch v {
+		case "true", "1", "yes", "on":
+			return true, nil
+		case "false", "0", "no", "off":
+			return false, nil
+		default:
+			return false, fmt.Errorf("无法识别的布尔值字符串: %s", v)
+		}
+	case int, int8, int16, int32, int64:
+		return reflect.ValueOf(v).Int() != 0, nil
+	case uint, uint8, uint16, uint32, uint64:
+		return reflect.ValueOf(v).Uint() != 0, nil
+	default:
+		return false, fmt.Errorf("不支持的布尔值类型: %T", value)
+	}
+}
+
 func main() {
 	var secret string
 	var port int
-	var debugFlag bool
-	var venvDir string // 新增：虚拟环境目录参数
+	var debugStr string // 改为字符串类型
+	var venvDir string
+	var showVersion bool
 
+	// 修改参数定义
 	flag.StringVar(&secret, "secret", "", "服务器密钥")
 	flag.IntVar(&port, "p", 10000, "端口号")
-	flag.BoolVar(&debugFlag, "debug", false, "调试模式")
-	flag.StringVar(&venvDir, "venv", ".env_beancount-v3", "虚拟环境目录名称，默认值为 .env_beancount-v3") // 新增参数
+	flag.StringVar(&debugStr, "debug", "false", "调试模式(true/false/1/0/yes/no/on/off)") // 改为字符串，默认"false"
+	flag.StringVar(&venvDir, "venv", ".env_beancount-v3", "虚拟环境目录名称，默认值为 .env_beancount-v3")
+	flag.BoolVar(&showVersion, "version", false, "显示版本号")
+	flag.BoolVar(&showVersion, "v", false, "显示版本号(简写)")
 
 	flag.Parse()
+
+	// 解析调试模式参数
+	debugFlag, err := parseToBool(debugStr)
+	if err != nil {
+		fmt.Printf("参数错误: debug 必须是 true/false/1/0/yes/no/on/off, 实际输入: %q\n", debugStr)
+		os.Exit(1)
+	}
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	// 初始化虚拟环境执行器
 	initVenvExecutor(venvDir)
 
 	// 读取配置文件
-	err := script.LoadServerConfig()
+	err = script.LoadServerConfig()
 	if err != nil {
 		script.LogSystemError("Failed to load server config, " + err.Error())
 		return
 	}
 
-	// 如果命令行指定了debug参数，覆盖配置文件中的设置
-	if debugFlag {
-		err = script.SetDebugMode(true)
-		if err != nil {
-			fmt.Println("Warning: Failed to set debug mode:", err)
+	// 简化调试模式设置逻辑
+	currentDebugMode := script.IsDebugMode()
+	fmt.Printf("命令行参数: debug=%v (原始输入: %q)\n", debugFlag, debugStr)
+	fmt.Printf("配置文件初始值: debug=%v\n", currentDebugMode)
+
+	// 只有当调试模式真正改变时才更新
+	if debugFlag != currentDebugMode {
+		if err := script.SetDebugMode(debugFlag); err != nil {
+			fmt.Println("警告: 设置调试模式失败:", err)
+		} else {
+			fmt.Printf("调试模式已从 %v 更改为 %v\n", currentDebugMode, debugFlag)
 		}
 	}
 
-	// 现在可以在任何地方使用 script.IsDebugMode() 来检查调试模式
+	// 设置 Gin 模式
 	if script.IsDebugMode() {
-		fmt.Println("调试模式已启用")
+		fmt.Println("当前运行在调试模式")
+		gin.SetMode(gin.DebugMode)
 	} else {
-		fmt.Println("调试模式未启用")
+		fmt.Println("当前运行在发布模式")
+		gin.SetMode(gin.ReleaseMode)
 	}
 
 	serverConfig := script.GetServerConfig()
@@ -215,10 +272,22 @@ func main() {
 		}
 	}
 
+	// 确保 logs 目录存在
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		fmt.Printf("警告: 创建logs目录失败: %v\n", err)
+	}
+
 	// gin 日志设置
 	gin.DisableConsoleColor()
-	fs, _ := os.Create("logs/gin.log")
-	gin.DefaultWriter = io.MultiWriter(fs, os.Stdout)
+	fs, err := os.Create("logs/gin.log")
+	if err != nil {
+		fmt.Printf("警告: 创建gin日志文件失败: %v\n", err)
+		gin.DefaultWriter = os.Stdout
+	} else {
+		gin.DefaultWriter = io.MultiWriter(fs, os.Stdout)
+		defer fs.Close()
+	}
+
 	router := gin.Default()
 
 	// 注册路由
@@ -236,10 +305,16 @@ func main() {
 	// 打开浏览器
 	script.OpenBrowser(url)
 
-	// 打印密钥
-	script.LogSystemInfo("Secret token is " + script.GenerateServerSecret(secret))
+	// 打印密钥 - 使用传入的secret参数
+	if secret != "" {
+		script.LogSystemInfo("Secret token is " + script.GenerateServerSecret(secret))
+	} else {
+		// 如果没有传入secret，使用默认生成或配置文件中的
+		script.LogSystemInfo("Secret token is " + script.GenerateServerSecret(""))
+	}
 
 	// 启动服务
+	fmt.Printf("服务启动在端口 %d...\n", port)
 	err = router.Run(portStr)
 	if err != nil {
 		script.LogSystemError("Failed to start server, " + err.Error())

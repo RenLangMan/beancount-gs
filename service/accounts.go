@@ -3,7 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
 	"github.com/gin-gonic/gin"
 	"regexp"
 	"sort"

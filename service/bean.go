@@ -3,7 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
-	"github.com/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
 )
 
 // CreateMonthBeanFileIfNotExist create month bean file if not exist, otherwise return.

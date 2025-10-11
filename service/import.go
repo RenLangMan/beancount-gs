@@ -9,10 +9,43 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/importer"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
+
+// ImportExternalFile 处理外部文件导入请求
+func ImportExternalFile(c *gin.Context) {
+	// 获取上传的文件
+	file, err := c.FormFile("file")
+	if err != nil {
+		BadRequest(c, "文件上传失败")
+		return
+	}
+
+	// 保存文件到临时目录
+	tempPath := "./temp/" + file.Filename
+	if err := c.SaveUploadedFile(file, tempPath); err != nil {
+		BadRequest(c, "文件保存失败")
+		return
+	}
+
+	// 设置规则和输出路径
+	rulesPath := "rules/" + file.Filename[:len(file.Filename)-4] + "_rules.yaml"
+	outputPath := "output/" + file.Filename[:len(file.Filename)-4] + ".beancount"
+
+	// 调用导入器执行导入
+	if err := importer.Import(tempPath, rulesPath, outputPath); err != nil {
+		InternalError(c, "导入失败: "+err.Error())
+		return
+	}
+
+	OK(c, gin.H{
+		"message": "导入成功",
+		"file":    file.Filename,
+	})
+}
 
 func ImportAliPayCSV(c *gin.Context) {
 	ledgerConfig := script.GetLedgerConfigFromContext(c)

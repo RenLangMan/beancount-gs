@@ -5,14 +5,13 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
 	"github.com/gin-gonic/gin"
 )
 
@@ -74,6 +73,16 @@ type UpdateConfigForm struct {
 	IsBak             bool   `form:"isBak" binding:"required"`
 }
 
+// UpdateServerConfig 处理更新服务器配置的请求
+// 1. 验证请求参数和服务器密钥
+// 2. 更新服务器配置
+// 3. 创建账本数据目录（如果不存在）
+// 4. 重新加载账本配置和账户缓存
+// 5. 返回更新后的服务器配置
+// 错误处理：
+//   - 参数绑定失败返回400错误
+//   - 服务器密钥不匹配返回403错误
+//   - 配置更新或目录创建失败返回500错误
 func UpdateServerConfig(c *gin.Context) {
 	var updateConfigForm UpdateConfigForm
 	if err := c.ShouldBindJSON(&updateConfigForm); err != nil {
@@ -285,7 +294,7 @@ func initLedgerFiles(sourceFilePath string, targetFilePath string, ledgerConfig 
 }
 
 func copyFile(sourceFilePath string, targetFilePath string, ledgerConfig script.Config) error {
-	rd, err := ioutil.ReadDir(sourceFilePath)
+	rd, err := os.ReadDir(sourceFilePath)
 	if err != nil {
 		return err
 	}

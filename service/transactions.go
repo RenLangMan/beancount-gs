@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 )
@@ -95,29 +95,6 @@ type TransactionTemplate struct {
 }
 
 // ==================== 工具函数 ====================
-
-// getTransactionDateRange 获取交易记录的时间范围
-func getTransactionDateRange(ledgerConfig *script.Config) (*DateRange, error) {
-	var dateRange []DateRange
-	queryParams := script.QueryParams{
-		Where: false,
-	}
-
-	err := script.BQLQueryList(ledgerConfig, &queryParams, &dateRange)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(dateRange) == 0 {
-		currentDate := time.Now().Format("2006-01-02")
-		return &DateRange{
-			MinDate: currentDate,
-			MaxDate: currentDate,
-		}, nil
-	}
-
-	return &dateRange[0], nil
-}
 
 func buildQuery(params map[string]string) string {
 	var buf strings.Builder
@@ -215,7 +192,11 @@ func sum(entries []TransactionEntryForm, openingBalances string) decimal.Decimal
 
 func QueryTransactionDetailById(c *gin.Context) {
 	ledgerConfig := script.GetLedgerConfigFromContext(c)
-	queryParams := script.GetQueryParams(c)
+	queryParams, err := script.GetQueryParams(c)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
 
 	if queryParams.ID == "" {
 		BadRequest(c, "参数 'id' 不能为空")
@@ -223,7 +204,7 @@ func QueryTransactionDetailById(c *gin.Context) {
 	}
 
 	transactions := make([]Transaction, 0)
-	err := script.BQLQueryList(ledgerConfig, &queryParams, &transactions)
+	err = script.BQLQueryList(ledgerConfig, &queryParams, &transactions)
 	if err != nil {
 		BadRequest(c, err.Error())
 		return
@@ -268,7 +249,11 @@ func QueryTransactionDetailById(c *gin.Context) {
 
 func QueryTransactionRawTextById(c *gin.Context) {
 	ledgerConfig := script.GetLedgerConfigFromContext(c)
-	queryParams := script.GetQueryParams(c)
+	queryParams, err := script.GetQueryParams(c)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
 
 	if queryParams.ID == "" {
 		BadRequest(c, "参数 'id' 不能为空")
@@ -307,70 +292,80 @@ func QueryTransactions(c *gin.Context) {
 
 	c.Request.URL.RawQuery = buildQuery(params)
 
-	// 绑定查询参数
-	var transactionQuery TransactionQuery
-	if err := c.ShouldBindQuery(&transactionQuery); err != nil {
-		BadRequest(c, "无效的查询参数")
-		return
-	}
-
-	// 获取账本时间范围
-	dateRange, err := getTransactionDateRange(ledgerConfig)
+	// 使用新的 GetQueryParams 获取查询参数和日期范围
+	queryParams, err := script.GetQueryParams(c)
 	if err != nil {
-		InternalError(c, "获取账本时间范围失败")
+		InternalError(c, "获取查询参数失败: "+err.Error())
 		return
 	}
 
-	// 解析最小日期作为默认起始点
-	minDate, err := time.Parse("2006-01-02", dateRange.MinDate)
-	if err != nil {
-		InternalError(c, "解析账本最小日期失败")
-		return
-	}
-
-	// 设置默认年月
-	if transactionQuery.Year <= 0 {
-		transactionQuery.Year = minDate.Year()
-	}
-	if transactionQuery.Month <= 0 || transactionQuery.Month > 12 {
-		transactionQuery.Month = int(minDate.Month())
-	}
-
-	// 构建查询参数
-	queryParams := script.QueryParams{
-		FromYear:  minDate.Year(),
-		FromMonth: int(minDate.Month()),
-		Year:      transactionQuery.Year,
-		Month:     transactionQuery.Month,
-		Account:   transactionQuery.Account,
-		Tag:       transactionQuery.Tag,
-		Where:     true,
-		OrderBy:   "date desc",
-		Limit:     transactionQuery.Limit,
-		From:      true, // 启用起始日期查询
-		DateRange: true, // 启用日期范围查询
-	}
-
-	// 设置日期范围
-	if transactionQuery.Year <= 0 {
-		queryParams.Year = now.Year()
-		queryParams.Month = int(now.Month())
-	}
-
-	// 设置科目匹配模式
-	if transactionQuery.Account != "" {
-		queryParams.StrictAccountMatch = true
-	}
-
-	// 记录完整的查询参数
-	script.LogDebugDetailed(ledgerConfig.Mail, "QueryTransactions-FinalParams",
-		"完整查询参数: %+v (账本时间范围: %s 至 %s)",
-		queryParams, dateRange.MinDate, dateRange.MaxDate)
-
-	// 设置合理的limit
+	// 设置合理的默认值
 	if queryParams.Limit <= 0 || queryParams.Limit > 1000 {
 		queryParams.Limit = 100
 	}
+	if queryParams.OrderBy == "" {
+		queryParams.OrderBy = "date desc"
+	}
+
+	// 处理日期范围
+	now = time.Now()
+
+	// 处理日期范围
+	switch {
+	case queryParams.FromMonth > 0 && queryParams.Month > 0:
+		// 如果指定了FromMonth和ToMonth，查询月份范围
+		startMonth := max(1, min(queryParams.FromMonth, 12))
+		endMonth := max(1, min(queryParams.Month, 12))
+		minDate := time.Date(queryParams.Year, time.Month(startMonth), 1, 0, 0, 0, 0, time.UTC)
+		maxDate := time.Date(queryParams.Year, time.Month(endMonth)+1, 0, 23, 59, 59, 0, time.UTC)
+		queryParams.MinDate = minDate.Format("2006-01-02")
+		queryParams.MaxDate = maxDate.Format("2006-01-02")
+
+	case queryParams.Year > 0 && queryParams.Month == 0:
+		// 如果指定了年份但没指定月份，查询全年
+		minDate := time.Date(queryParams.Year, 1, 1, 0, 0, 0, 0, time.UTC)
+		maxDate := time.Date(queryParams.Year, 12, 31, 23, 59, 59, 0, time.UTC)
+		queryParams.MinDate = minDate.Format("2006-01-02")
+		queryParams.MaxDate = maxDate.Format("2006-01-02")
+
+	case queryParams.Year > 0 && queryParams.Month > 0:
+		// 如果指定了年份和月份，查询该月
+		minDate := time.Date(queryParams.Year, time.Month(queryParams.Month), 1, 0, 0, 0, 0, time.UTC)
+		maxDate := time.Date(queryParams.Year, time.Month(queryParams.Month)+1, 0, 23, 59, 59, 0, time.UTC)
+		queryParams.MinDate = minDate.Format("2006-01-02")
+		queryParams.MaxDate = maxDate.Format("2006-01-02")
+
+	default:
+		// 默认查询最近一个月
+		if queryParams.MinDate == "" {
+			// 获取当前时间
+			now := time.Now()
+
+			// 计算上月1号
+			firstOfLastMonth := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())
+
+			// 计算本月末（下月1号的前一天）
+			lastOfThisMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location()).AddDate(0, 0, -1)
+
+			// 设置日期范围
+			queryParams.MinDate = firstOfLastMonth.Format("2006-01-02")
+			queryParams.MaxDate = lastOfThisMonth.Format("2006-01-02")
+		}
+	}
+
+	// 记录日期范围
+	script.LogDebugDetailed(ledgerConfig.Mail, "DateRange",
+		"日期范围: %s 到 %s",
+		queryParams.MinDate,
+		queryParams.MaxDate)
+
+	// 记录详细的查询参数
+	script.LogDebugDetailed(ledgerConfig.Mail, "QueryTransactions",
+		"查询参数: %+v\n日期范围: %s 到 %s\n账本: %s",
+		queryParams,
+		queryParams.MinDate,
+		queryParams.MaxDate,
+		ledgerConfig.Title)
 
 	// 执行查询
 	transactions := make([]Transaction, 0)
@@ -630,7 +625,11 @@ func UpdateTransactionRawTextById(c *gin.Context) {
 }
 
 func DeleteTransactionById(c *gin.Context) {
-	queryParams := script.GetQueryParams(c)
+	queryParams, err := script.GetQueryParams(c)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
 	if queryParams.ID == "" {
 		BadRequest(c, "Param 'id' must not be blank.")
 		return

@@ -2,7 +2,7 @@ package service
 
 import (
 	"fmt"
-	"github.com/beancount-gs/script"
+	"cnb.cool/ysundy/bean/beancount-gs/script"
 	"github.com/gin-gonic/gin"
 )
 
